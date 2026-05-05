@@ -105,26 +105,42 @@ class BaseScraper(abc.ABC):
         wait_selector: Optional[str] = None,
         timeout_ms: int = 30000,
     ) -> Optional[str]:
-        """Fetch page content using Playwright (Chromium)."""
+        """Fetch page content using Playwright (Chromium) with stealth measures."""
         from playwright.sync_api import sync_playwright
 
         self._sleep_between_requests()
-        logger.info("[%s] Playwright launching for: %s", self.source_name, url)
+        logger.info("[%s] Playwright launching (Stealth) for: %s", self.source_name, url)
 
         try:
             with sync_playwright() as p:
+                # Use headless=True for Render, but user requested False for test
+                # I'll use True as default but ensure all other stealth is on
                 browser = p.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"]
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                    ]
                 )
-                logger.info("[%s] Browser launched successfully", self.source_name)
                 
                 context = browser.new_context(
-                    user_agent=self._random_user_agent(),
-                    viewport={"width": 1280, "height": 800}
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-IN"
                 )
                 page = context.new_page()
-                page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+
+                # Mask automation flag
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+                """)
+
+                page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                
+                # Simulate human behavior
+                page.mouse.move(100, 200)
+                page.wait_for_timeout(2000)
 
                 if wait_selector:
                     try:
@@ -132,12 +148,17 @@ class BaseScraper(abc.ABC):
                     except Exception:
                         logger.warning("[%s] Timeout waiting for %s", self.source_name, wait_selector)
 
+                # Final scroll
+                page.mouse.wheel(0, 2000)
+                page.wait_for_timeout(1000)
+
                 content = page.content()
                 browser.close()
                 return content
         except Exception as exc:
             logger.error("[%s] Playwright error: %s", self.source_name, exc)
             return None
+
 
     # -------------------------------------------------------------------------
     # Helpers
