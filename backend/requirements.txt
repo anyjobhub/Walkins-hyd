@@ -28,7 +28,7 @@ python-dateutil==2.9.0
 
 # Fuzzy Matching (Deduplication)
 thefuzz==0.22.1
-python-Levenshtein==0.25.1
+# python-Levenshtein removed: thefuzz 0.22+ uses rapidfuzz directly (no C build needed)
 
 # Environment & Config
 python-dotenv==1.0.1
