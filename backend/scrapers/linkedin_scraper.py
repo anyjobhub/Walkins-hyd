@@ -2,18 +2,17 @@
 scrapers/linkedin_scraper.py — LinkedIn walk-in job scraper using RSS feeds.
 
 Strategy:
-  LinkedIn blocks HTML scraping aggressively. Instead, we use:
-  1. LinkedIn's public RSS feed for job searches (no auth required).
-  2. We parse the XML feed and detect walk-in mentions in descriptions.
-  3. NEW: Multi-city scraping, relevance filtering, Telegram formatting.
-
-This is compliant with LinkedIn's public data access patterns.
+  - Uses LinkedIn's public RSS feed for job searches.
+  - Multi-city scraping: Hyderabad, Bangalore, Chennai.
+  - Targeted queries as requested by user.
+  - Retry logic for empty feeds.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlencode
 
@@ -24,7 +23,7 @@ from services.data_cleaner import DataCleaner
 
 logger = logging.getLogger(__name__)
 
-# ── Shared constants (mirror naukri_scraper for consistency) ─────────────────
+# ── Shared constants ─────────────────────────────────────────────────────────
 DEFAULT_CITIES: List[str] = ["Hyderabad", "Bangalore", "Chennai"]
 
 RELEVANCE_KEYWORDS: List[str] = [
@@ -39,12 +38,7 @@ RELEVANCE_KEYWORDS: List[str] = [
 
 
 class LinkedInScraper(BaseScraper):
-    """
-    Parses LinkedIn job listings via their public RSS/Atom feed.
-
-    LinkedIn RSS URL pattern:
-      https://www.linkedin.com/jobs/search/?keywords=walk-in&location=India&f_TPR=r86400&rss=1
-    """
+    """Parses LinkedIn job listings via their public RSS/Atom feed."""
 
     BASE_URL = "https://www.linkedin.com/jobs/search/"
 
@@ -62,10 +56,9 @@ class LinkedInScraper(BaseScraper):
         max_pages: int = 3,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch LinkedIn job listings using multiple targeted RSS queries.
-        Runs 5 queries per city to maximize results.
+        Fetch LinkedIn job listings using multiple targeted RSS queries as requested.
         """
-        # Multiple targeted queries per city
+        # Targeted queries per city as requested by user
         search_queries = [
             f"walk in {location}",
             f"walk-in drive {location}",
@@ -82,11 +75,13 @@ class LinkedInScraper(BaseScraper):
         for query in search_queries:
             try:
                 jobs = self._fetch_rss(query, location)
-                # If first attempt fails/empty, retry once after a small delay
+                # Retry if feed empty as requested
                 if not jobs:
+                    logger.info("LinkedIn | Feed empty for query '%s', retrying...", query)
                     time.sleep(2)
                     jobs = self._fetch_rss(query, location)
-                new = 0
+
+                new_count = 0
                 for job in jobs:
                     url = job.get("job_url", "")
                     if url and url in seen_urls:
@@ -94,43 +89,33 @@ class LinkedInScraper(BaseScraper):
                     if url:
                         seen_urls.add(url)
                     all_jobs.append(job)
-                    new += 1
+                    new_count += 1
                 logger.info("LinkedIn | city=%s query='%s' → %d jobs (%d new)",
-                            location, query, len(jobs), new)
+                            location, query, len(jobs), new_count)
             except Exception as exc:
                 logger.error("LinkedIn RSS error city=%s query='%s': %s", location, query, exc)
 
-        logger.info("LinkedIn | city=%s done | total_unique=%d", location, len(all_jobs))
+        if not all_jobs:
+            logger.warning("LinkedIn | No jobs found for city=%s", location)
+
         return all_jobs
 
-
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
-        """
-        Parse a single feedparser entry into a job dict.
-
-        element: feedparser entry object
-        """
+        """Parse a single feedparser entry into a job dict."""
         try:
             job = self._build_base_job()
 
-            # Title
             job["title"] = getattr(element, "title", "") or ""
             if not job["title"]:
                 return None
 
-            # Job URL (used as unique source_id)
             job["job_url"] = getattr(element, "link", "") or ""
             job["source_id"] = job["job_url"].split("?")[0].strip("/").split("/")[-1]
 
-            # Summary / description
-            summary = (
-                getattr(element, "summary", "") or
-                getattr(element, "description", "") or ""
-            )
+            summary = getattr(element, "summary", "") or getattr(element, "description", "") or ""
             job["job_description"] = summary
 
-            # Company & location are often embedded in title or summary for LinkedIn RSS
-            # Pattern: "Software Engineer at TechCorp in Mumbai"
+            # Extract company and location from title "Title at Company in Location"
             title_parts = job["title"].split(" at ")
             if len(title_parts) >= 2:
                 job["title"] = title_parts[0].strip()
@@ -140,25 +125,18 @@ class LinkedInScraper(BaseScraper):
                 if len(loc_parts) >= 2:
                     job["location"] = loc_parts[1].strip()
             else:
-                # Try to extract from tags
                 tags = getattr(element, "tags", []) or []
-                job["company"] = next(
-                    (t.term for t in tags if t.scheme and "company" in t.scheme),
-                    "Unknown",
-                )
+                job["company"] = next((t.term for t in tags if t.scheme and "company" in t.scheme), "Unknown")
 
-            # Published date
             published = getattr(element, "published_parsed", None)
             if published:
                 from datetime import datetime, timezone
                 job["posted_date"] = datetime(*published[:6], tzinfo=timezone.utc)
 
-            # Detect walk-in and fresher from title + summary
             combined = f"{job['title']} {summary}"
             job["is_walkin"] = self._detect_walkin(combined)
             job["is_fresher_friendly"] = self._detect_fresher(combined)
 
-            # UPGRADED: always try to extract walk-in details from description
             if summary:
                 walkin_info = self.extract_walkin_details(summary)
                 for key, val in walkin_info.items():
@@ -171,21 +149,16 @@ class LinkedInScraper(BaseScraper):
             logger.debug("Failed to parse LinkedIn entry: %s", exc)
             return None
 
-    # -------------------------------------------------------------------------
-    # Internal helpers
-    # -------------------------------------------------------------------------
     def _fetch_rss(self, keywords: str, location: str) -> List[Dict[str, Any]]:
-        """Fetch and parse the LinkedIn RSS feed for the given search parameters."""
+        """Fetch and parse the LinkedIn RSS feed."""
         params = {
             "keywords": keywords,
             "location": location,
             "rss": "1",
             "f_TPR": "r86400",    # Last 24 hours
-            "f_JT": "F,P,C",     # Full-time, Part-time, Contract
         }
         url = f"{self.BASE_URL}?{urlencode(params)}"
 
-        # feedparser handles fetching and XML parsing
         self._sleep_between_requests()
         logger.debug("Fetching LinkedIn RSS: %s", url)
 
@@ -198,10 +171,7 @@ class LinkedInScraper(BaseScraper):
         )
 
         if feed.bozo and not feed.entries:
-            logger.warning("LinkedIn RSS returned malformed/empty feed")
             return []
-
-        logger.debug("LinkedIn RSS: %d entries", len(feed.entries))
 
         jobs = []
         for entry in feed.entries:
@@ -211,7 +181,6 @@ class LinkedInScraper(BaseScraper):
 
         return jobs
 
-    # ── NEW: Improved walk-in detail extractor ────────────────────────────────
     def extract_walkin_details(self, text: str) -> Dict[str, Any]:
         """Extract structured walk-in fields from raw description text."""
         result: Dict[str, Any] = {
@@ -272,9 +241,7 @@ class LinkedInScraper(BaseScraper):
 
         return result
 
-    # ── NEW: Relevance filter ─────────────────────────────────────────────────
     def is_relevant(self, job: Dict[str, Any]) -> bool:
-        """Return True if the job matches walk-in / fresher / BPO / IT keywords."""
         haystack = " ".join([
             str(job.get("title", "")),
             str(job.get("job_description", "")),
@@ -282,27 +249,26 @@ class LinkedInScraper(BaseScraper):
         ]).lower()
         return any(kw in haystack for kw in RELEVANCE_KEYWORDS)
 
-    # ── NEW: Multi-city orchestrator ──────────────────────────────────────────
     def scrape_all_cities(
         self,
         cities: List[str] = None,
-        keywords: str = "walk-in interview",
+        keywords: str = "walk-in",
         max_pages: int = 2,
         filter_relevant: bool = True,
     ) -> List[Dict[str, Any]]:
-        """
-        Scrape LinkedIn RSS across multiple cities with dedup + relevance filter.
-        """
+        """Scrape LinkedIn RSS across Hyderabad, Bangalore, Chennai."""
         cities = cities or DEFAULT_CITIES
         seen_urls: Set[str] = set()
         all_jobs: List[Dict[str, Any]] = []
 
         for city in cities:
-            logger.info("━━━ Scraping LinkedIn | city=%-12s ━━━", city)
+            logger.info("━━━ LinkedIn | city=%-12s ━━━", city)
             try:
                 city_jobs = self.scrape_jobs(location=city, keywords=keywords)
+                if not city_jobs:
+                    logger.warning("LinkedIn | No jobs found for city=%s, continuing to next city", city)
             except Exception as exc:
-                logger.error("Failed scraping LinkedIn for %s: %s", city, exc)
+                logger.error("LinkedIn failed for city=%s: %s", city, exc)
                 continue
 
             new_count = 0
@@ -317,41 +283,30 @@ class LinkedInScraper(BaseScraper):
                 all_jobs.append(job)
                 new_count += 1
 
-            logger.info(
-                "LinkedIn | city=%-12s scraped=%d  added=%d",
-                city, len(city_jobs), new_count,
-            )
+            logger.info("LinkedIn | city=%-12s scraped=%d  added=%d", city, len(city_jobs), new_count)
 
         logger.info("LinkedIn scrape_all_cities done. total_unique=%d", len(all_jobs))
         return all_jobs
 
-    # ── NEW: Telegram formatter ───────────────────────────────────────────────
     @staticmethod
     def to_telegram_format(job: Dict[str, Any]) -> str:
-        """Format a job dict as a Telegram-ready plain-text message."""
         def _f(val, default="—"):
             return str(val).strip() if val else default
 
         lines = [
-            f"🔥 {_f(job.get('title'))}",
-            "",
+            f"🔥 {_f(job.get('title'))}", "",
             f"🏢 {_f(job.get('company'))}",
-            f"📍 {_f(job.get('location'))}",
-            "",
+            f"📍 {_f(job.get('location'))}", "",
             f"💰 Salary: {_f(job.get('salary'))}",
             f"📊 Experience: {_f(job.get('experience'))}",
         ]
         if job.get("walkin_dates") or job.get("walkin_time"):
-            lines += [
-                "", "🗓 WALK-IN DETAILS:",
-                f"   {_f(job.get('walkin_dates'))}",
-                f"   {_f(job.get('walkin_time'))}",
-            ]
+            lines += ["", "🗓 WALK-IN DETAILS:",
+                      f"   {_f(job.get('walkin_dates'))}",
+                      f"   {_f(job.get('walkin_time'))}"]
         if job.get("address"):
             lines += ["", "📍 Address:", f"   {_f(job.get('address'))}"]
-        contact_parts = [
-            p for p in [job.get("contact_person"), job.get("contact_phone")] if p
-        ]
+        contact_parts = [p for p in [job.get("contact_person"), job.get("contact_phone")] if p]
         if contact_parts:
             lines.append(f"\n📞 Contact: {' | '.join(str(p) for p in contact_parts)}")
         lines += ["", "🚨 JOB LINK:", f"{_f(job.get('job_url'), '#')}"]

@@ -3,9 +3,9 @@ scrapers/naukri_scraper.py — Naukri.com walk-in job scraper (HTML-based).
 
 Strategy:
   - Scrapes Naukri search pages directly using requests + BeautifulSoup.
-  - URL pattern: https://www.naukri.com/walk-in-jobs-in-{city}-{page}
+  - URL pattern: https://www.naukri.com/walk-in-interview-jobs-in-{city}-{page}
   - Multi-city: Hyderabad, Bangalore, Chennai.
-  - Robust fallback selectors for job cards.
+  - Robust selectors for job cards: article.jobTuple, .srp-jobtuple-wrapper.
   - 2-5 second polite delay between requests.
 """
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CITIES: List[str] = ["hyderabad", "bangalore", "chennai"]
 NAUKRI_BASE = "https://www.naukri.com"
 
-# Chrome-like headers to avoid bot detection
+# Chrome-like headers as requested by user
 NAUKRI_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -41,9 +41,6 @@ NAUKRI_HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
 }
 
 RELEVANCE_KEYWORDS: List[str] = [
@@ -84,12 +81,12 @@ class NaukriScraper(BaseScraper):
             try:
                 page_jobs = self._scrape_page(city_slug, page)
                 if not page_jobs:
-                    logger.info("Naukri | city=%s page=%d → 0 cards, stopping", location, page)
+                    logger.warning("Naukri | city=%s page=%d → No jobs found, skipping city", location, page)
                     break
                 all_jobs.extend(page_jobs)
                 logger.info("Naukri | city=%s page=%d → %d jobs (total %d)",
                             location, page, len(page_jobs), len(all_jobs))
-                # Polite delay between pages
+                # Polite delay between pages (2-5 sec as requested)
                 time.sleep(random.uniform(2, 5))
             except (RateLimitError, ForbiddenError) as exc:
                 logger.error("Naukri blocked for %s: %s", location, exc)
@@ -106,12 +103,12 @@ class NaukriScraper(BaseScraper):
             job = self._build_base_job()
 
             # ── Title ─────────────────────────────────────────────────────
+            # a.title as requested
             title_el = (
                 element.select_one("a.title") or
                 element.select_one(".jobTitle a") or
                 element.select_one("a[class*='title']") or
-                element.select_one("h2 a") or
-                element.select_one("a[title]")
+                element.select_one("h2 a")
             )
             if not title_el:
                 return None
@@ -129,8 +126,7 @@ class NaukriScraper(BaseScraper):
             company_el = (
                 element.select_one("a.comp-name") or
                 element.select_one(".companyInfo a") or
-                element.select_one("[class*='company-name']") or
-                element.select_one("[class*='companyName']")
+                element.select_one("[class*='company-name']")
             )
             job["company"] = company_el.get_text(strip=True) if company_el else "Unknown"
 
@@ -138,8 +134,7 @@ class NaukriScraper(BaseScraper):
             loc_el = (
                 element.select_one("li.location") or
                 element.select_one(".locWdth") or
-                element.select_one("span[class*='location']") or
-                element.select_one("[class*='loc']")
+                element.select_one("span[class*='location']")
             )
             if loc_el:
                 job["location"] = loc_el.get_text(strip=True)
@@ -147,8 +142,7 @@ class NaukriScraper(BaseScraper):
             # ── Experience ────────────────────────────────────────────────
             exp_el = (
                 element.select_one("li.experience") or
-                element.select_one(".expwdth") or
-                element.select_one("span[class*='experience']")
+                element.select_one(".expwdth")
             )
             if exp_el:
                 job["experience"] = exp_el.get_text(strip=True)
@@ -157,22 +151,21 @@ class NaukriScraper(BaseScraper):
             # ── Salary ────────────────────────────────────────────────────
             sal_el = (
                 element.select_one("li.salary") or
-                element.select_one(".sal") or
-                element.select_one("span[class*='salary']")
+                element.select_one(".sal")
             )
             if sal_el:
                 job["salary"] = sal_el.get_text(strip=True)
                 job.update(self.cleaner.normalize_salary(job["salary"]))
 
             # ── Skills / Tags ─────────────────────────────────────────────
-            skills_els = element.select("li.tag, .tags li, [class*='skill'], ul.tags span")
+            skills_els = element.select("li.tag, .tags li, [class*='skill']")
             if skills_els:
                 job["skills"] = self.cleaner.clean_skills_array(
                     ", ".join(el.get_text(strip=True) for el in skills_els)
                 )
 
             # ── Description snippet ───────────────────────────────────────
-            desc_el = element.select_one(".job-description, [class*='desc'], .jd-desc")
+            desc_el = element.select_one(".job-description, [class*='desc']")
             snippet = desc_el.get_text(strip=True) if desc_el else ""
             job["job_description"] = snippet
 
@@ -204,7 +197,7 @@ class NaukriScraper(BaseScraper):
         max_pages: int = 2,
         filter_relevant: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Scrape Hyderabad, Bangalore, Chennai with dedup + relevance filter."""
+        """Scrape Hyderabad, Bangalore, Chennai as requested."""
         cities = cities or DEFAULT_CITIES
         seen_urls: Set[str] = set()
         all_jobs: List[Dict[str, Any]] = []
@@ -213,6 +206,8 @@ class NaukriScraper(BaseScraper):
             logger.info("━━━ Naukri | city=%-12s ━━━", city)
             try:
                 city_jobs = self.scrape_jobs(location=city, keywords=keywords, max_pages=max_pages)
+                if not city_jobs:
+                    logger.warning("Naukri | No jobs found for city=%s, continuing to next city", city)
             except Exception as exc:
                 logger.error("Naukri failed for city=%s: %s", city, exc)
                 continue
@@ -225,7 +220,6 @@ class NaukriScraper(BaseScraper):
                 if url:
                     seen_urls.add(url)
                 if filter_relevant and not self.is_relevant(job):
-                    logger.debug("Filtered: %s", job.get("title"))
                     continue
                 all_jobs.append(job)
                 added += 1
@@ -240,7 +234,7 @@ class NaukriScraper(BaseScraper):
     # ─────────────────────────────────────────────────────────────────────────
     def _build_search_url(self, city_slug: str, page: int) -> str:
         """
-        Build Naukri walk-in search URL.
+        Build Naukri walk-in search URL as requested.
         Pattern: https://www.naukri.com/walk-in-interview-jobs-in-{city}-{page}
         """
         if page <= 1:
@@ -263,22 +257,17 @@ class NaukriScraper(BaseScraper):
 
         soup = BeautifulSoup(response.text, "lxml")
 
-        # Try multiple selectors — Naukri changes class names frequently
+        # Required selectors as requested by user
         job_cards = (
             soup.select("article.jobTuple") or
             soup.select(".srp-jobtuple-wrapper") or
             soup.select("[class*='jobTuple']") or
-            soup.select(".job-tuple") or
-            soup.select("article[class*='job']") or
-            soup.select("div[class*='jobTuple']")
+            soup.select(".job-tuple")
         )
 
         logger.info("Naukri | url=%s → %d job cards found", url, len(job_cards))
 
         if not job_cards:
-            # Debug: log page snippet to understand structure
-            body_preview = soup.body.get_text()[:300] if soup.body else "no body"
-            logger.debug("Naukri page preview: %s", body_preview)
             return []
 
         jobs = []
@@ -287,7 +276,6 @@ class NaukriScraper(BaseScraper):
             if parsed and parsed.get("title"):
                 jobs.append(parsed)
 
-        logger.info("Naukri | url=%s → %d valid jobs extracted", url, len(jobs))
         return jobs
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -353,9 +341,6 @@ class NaukriScraper(BaseScraper):
 
         return result
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Relevance filter
-    # ─────────────────────────────────────────────────────────────────────────
     def is_relevant(self, job: Dict[str, Any]) -> bool:
         haystack = " ".join([
             str(job.get("title", "")),
@@ -364,9 +349,6 @@ class NaukriScraper(BaseScraper):
         ]).lower()
         return any(kw in haystack for kw in RELEVANCE_KEYWORDS)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Telegram formatter
-    # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
     def to_telegram_format(job: Dict[str, Any]) -> str:
         def _f(val, default="—"):
