@@ -64,7 +64,7 @@ class TimesJobsScraper(BaseScraper):
                 logger.error("[timesjobs] SSL/Request error for %s: %s", url, e)
             
             if not html or "No Jobs found" in html:
-                logger.info("[timesjobs] Requests failed, trying Playwright...")
+                logger.info("[timesjobs] Requests failed or SSL issue, trying Playwright...")
                 html = self._get_playwright(url, wait_selector=".job-bx")
 
             if not html: continue

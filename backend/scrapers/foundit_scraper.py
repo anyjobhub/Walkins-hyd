@@ -65,6 +65,7 @@ class FounditScraper(BaseScraper):
             
             # 2. Try Playwright fallback
             if not html or "No jobs found" in html:
+                logger.info("[foundit] Requests failed or empty, trying Playwright...")
                 html = self._get_playwright(url, wait_selector=".srpResultCard")
 
             if not html:

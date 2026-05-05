@@ -249,11 +249,17 @@ class BaseScraper(abc.ABC):
         from playwright.sync_api import sync_playwright
 
         self._sleep_between_requests()
-        logger.info("[%s] Fetching via Playwright: %s", self.source_name, url)
+        logger.info("[%s] Playwright launching for: %s", self.source_name, url)
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                # Add --no-sandbox for Render compatibility
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"]
+                )
+                logger.info("[%s] Browser launched successfully", self.source_name)
+                
                 # Create a context with a random User-Agent
                 context = browser.new_context(
                     user_agent=self._random_user_agent(),
@@ -277,6 +283,7 @@ class BaseScraper(abc.ABC):
         except Exception as exc:
             logger.error("[%s] Playwright error for %s: %s", self.source_name, url, exc)
             return None
+
 
     # -------------------------------------------------------------------------
     # Shared helpers
