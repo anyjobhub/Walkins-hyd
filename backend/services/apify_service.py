@@ -102,4 +102,3 @@ def get_formatted_messages() -> List[str]:
     """
     jobs = fetch_jobs_from_apify()
     return [format_job_message(j) for j in jobs]
- Riverside
