@@ -422,14 +422,17 @@ def scrape_start():
             "jobs":       [],
         })
 
+    # ✅ Capture app object HERE (inside request context), BEFORE spawning thread
+    from flask import current_app
+    app = current_app._get_current_object()
+
     def _log(msg: str):
         _scrape_state["log"].append(msg)
         logger.info(msg)
 
     def run():
         from tasks.scraper_tasks import _run_scraper_task, run_deduplication
-        from flask import current_app
-        app = current_app._get_current_object()
+        # Use captured app — not current_app (which has no context in a thread)
         with app.app_context():
             try:
                 for source in ["naukri", "linkedin", "indeed"]:
@@ -463,6 +466,7 @@ def scrape_start():
 
     thread = threading.Thread(target=run, daemon=True, name="dashboard-scraper")
     thread.start()
+
     return jsonify({"status": "started"})
 
 
