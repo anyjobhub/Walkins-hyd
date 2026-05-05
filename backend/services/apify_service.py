@@ -1,5 +1,5 @@
 """
-services/apify_service.py — Job aggregation and WhatsApp message formatting.
+services/apify_service.py — Job aggregation for Indian walk-in jobs using johnvc~Google-Jobs-Scraper.
 """
 
 import os
@@ -21,7 +21,7 @@ def format_job_message(job: Dict[str, Any]) -> str:
     experience = str(job.get("experience") or "Not Mentioned").strip()
     job_url = str(job.get("job_url") or "Not Mentioned").strip()
 
-    # Build the structured message
+    # Build the structured message as per requirement
     message = (
         f"{company} is hiring for {title} | {location}\n\n"
         f"Experience: {experience}\n\n"
@@ -36,8 +36,8 @@ def format_job_message(job: Dict[str, Any]) -> str:
 
 def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
     """
-    Fetches raw job data from Apify and filters it.
-    Returns a list of job dictionaries compatible with the database.
+    Fetches Indian walk-in jobs for Hyderabad, Bangalore, and Chennai.
+    Uses multi-city logic to call the actor separately for each city.
     """
     api_token = os.getenv("APIFY_API_TOKEN")
     if not api_token:
@@ -45,53 +45,49 @@ def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
         return []
 
     client = ApifyClient(api_token)
-    
-    queries = [
-        "walk in jobs Hyderabad",
-        "walk in jobs Bangalore",
-        "walk in jobs Chennai"
-    ]
-    
+    cities = ["Hyderabad", "Bangalore", "Chennai"]
     relevant_jobs = []
     
-    try:
-        logger.info("Triggering Apify Google Jobs Scraper...")
-        
-        run_input = {
-            "queries": "\n".join(queries),
-            "maxItems": 30,
-            "maxPagesPerQuery": 2,
-            "proxyConfiguration": {"useApifyProxy": True}
-        }
-
-        run = client.actor("apify~google-jobs-scraper").call(run_input=run_input)
-        
-        raw_count = 0
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-            raw_count += 1
+    for city in cities:
+        try:
+            logger.info("Triggering Apify Scraper for city: %s", city)
             
-            via = str(item.get("via") or "").lower()
-            title = str(item.get("title") or "").lower()
+            run_input = {
+                "query": f"walk in jobs {city}",
+                "location": f"{city}, India",
+                "include_lrad": False,
+                "lrad_value": "5",
+                "maxItems": 10  # Keeping max items low for free plan
+            }
+
+            # Using johnvc~Google-Jobs-Scraper as requested
+            run = client.actor("johnvc~Google-Jobs-Scraper").call(run_input=run_input)
             
-            # Filter Rules: "walk" in title OR "naukri" in via
-            if "walk" in title or "naukri" in via:
-                job_data = {
-                    "title": item.get("title"),
-                    "company": item.get("companyName"),
-                    "location": item.get("location"),
-                    "job_url": item.get("jobUrl") or item.get("url"),
-                    "source": f"Google Jobs via {item.get('via', 'Apify')}",
-                    "experience": item.get("experience"),
-                    "is_walkin": "walk" in title,
-                    "is_fresher_friendly": "fresher" in title or "0-" in title
-                }
-                relevant_jobs.append(job_data)
+            city_raw_count = 0
+            for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+                city_raw_count += 1
+                
+                title = str(item.get("title") or "").lower()
+                
+                # Filter Rules: "walk" OR "bpo" OR "customer" in title
+                if "walk" in title or "bpo" in title or "customer" in title:
+                    job_data = {
+                        "title": item.get("title"),
+                        "company": item.get("companyName") or item.get("company"),
+                        "location": item.get("location") or city.upper(),
+                        "job_url": item.get("jobUrl") or item.get("url"),
+                        "source": f"Google Jobs ({city})",
+                        "experience": item.get("experience") or "Not Mentioned",
+                        "is_walkin": "walk" in title,
+                        "is_fresher_friendly": any(k in title for k in ["fresher", "0-", "entry"])
+                    }
+                    relevant_jobs.append(job_data)
 
-        logger.info("Apify Done: Total: %d | Relevant: %d", raw_count, len(relevant_jobs))
+            logger.info("City: %s | Total: %d | Relevant: %d", city, city_raw_count, len(relevant_jobs))
 
-    except Exception as e:
-        logger.error("Apify Service Error: %s", e, exc_info=True)
-        return []
+        except Exception as e:
+            logger.error("Error fetching jobs for %s: %s", city, e)
+            continue
 
     return relevant_jobs
 
