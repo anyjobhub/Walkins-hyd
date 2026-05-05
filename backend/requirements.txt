@@ -16,7 +16,7 @@ alembic==1.13.1
 APScheduler==3.10.4
 
 # API Client
-apify-client==1.8.1
+apify-client>=1.8.1
 
 # Data Processing
 requests==2.32.2
