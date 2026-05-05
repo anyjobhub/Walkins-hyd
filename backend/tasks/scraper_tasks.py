@@ -44,17 +44,20 @@ def run_indeed_scraper(location: str = "India") -> Dict[str, Any]:
 def run_scraper_pipeline(
     sources: List[str] = None,
     location: str = "India",
+    app=None,
 ) -> Dict[str, Any]:
     """
-    Run multiple scrapers in sequence.
+    Run multiple scrapers in sequence, then spread new jobs to Telegram over 4 hours.
 
     Args:
-        sources: List of source names to run.
+        sources:  List of source names to run.
         location: Location to scrape for.
+        app:      Flask app instance (needed for spread poster context).
 
     Returns:
         Combined statistics dict.
     """
+    import threading
     sources = sources or ["naukri", "linkedin", "indeed"]
     results = []
 
@@ -63,14 +66,31 @@ def run_scraper_pipeline(
         results.append(result)
 
     # Aggregate
-    total_found = sum(r.get("jobs_found", 0) for r in results)
-    total_added = sum(r.get("jobs_added", 0) for r in results)
+    total_found   = sum(r.get("jobs_found",   0) for r in results)
+    total_added   = sum(r.get("jobs_added",   0) for r in results)
     total_skipped = sum(r.get("jobs_skipped", 0) for r in results)
 
+    # Auto-spread new jobs to Telegram over 4 hours
+    if total_added > 0 and app is not None:
+        t = threading.Thread(
+            target=post_jobs_spread_over_hours,
+            args=(app,),
+            kwargs={"hours": 4.0},
+            daemon=True,
+            name="telegram-spread-poster",
+        )
+        t.start()
+        logger.info(
+            "Spread poster thread started: %d new jobs will post over 4 hours",
+            total_added,
+        )
+    elif total_added > 0:
+        logger.warning("No app context — spread poster skipped")
+
     return {
-        "sources": results,
-        "total_found": total_found,
-        "total_added": total_added,
+        "sources":       results,
+        "total_found":   total_found,
+        "total_added":   total_added,
         "total_skipped": total_skipped,
     }
 
@@ -79,31 +99,77 @@ def run_scraper_pipeline(
 # Telegram tasks
 # =============================================================================
 
-def post_unposted_jobs(batch_size: int = 10) -> Dict[str, Any]:
+def post_unposted_jobs() -> Dict[str, Any]:
     """
-    Fetch unposted jobs from DB and send them to Telegram.
-
-    Called every 15 minutes by the scheduler.
+    Post exactly 1 unposted job to Telegram.
+    Called as fallback by manual trigger / scrape-now endpoint.
     """
     from services.database_service import JobRepository
     from services.telegram_service import TelegramService
 
     svc = TelegramService()
     if not svc.is_configured:
-        logger.warning("Telegram not configured — skipping post_unposted_jobs")
         return {"sent": 0, "failed": 0, "skipped": "not configured"}
 
     repo = JobRepository()
-    jobs = repo.get_unposted_jobs(limit=batch_size)
-
+    jobs = repo.get_unposted_jobs(limit=1)
     if not jobs:
-        logger.debug("No unposted jobs to send")
         return {"sent": 0, "failed": 0}
 
-    logger.info("Posting %d jobs to Telegram", len(jobs))
-    result = svc.send_batch_jobs(jobs, delay_seconds=1.5)
+    return svc.send_batch_jobs([jobs[0]], delay_seconds=0)
 
-    return result
+
+def post_jobs_spread_over_hours(app, hours: float = 4.0) -> None:
+    """
+    Post ALL unposted jobs spread evenly over `hours` hours.
+
+    Called in a background thread automatically after every scrape.
+    Dynamically calculates interval:
+      20 jobs → 1 every 12 min → 4 hours
+      48 jobs → 1 every 5 min  → 4 hours
+     100 jobs → 1 every 2.4min → 4 hours
+
+    Requires Flask `app` to maintain DB context across sleeps.
+    """
+    import time
+    from services.database_service import JobRepository
+    from services.telegram_service import TelegramService
+
+    with app.app_context():
+        svc = TelegramService()
+        if not svc.is_configured:
+            logger.warning("Telegram not configured — skipping spread poster")
+            return
+
+        repo = JobRepository()
+        jobs = repo.get_unposted_jobs(limit=500)
+
+        if not jobs:
+            logger.info("No unposted jobs to spread")
+            return
+
+        total = len(jobs)
+        # Spread evenly: minimum 60 sec between posts
+        interval = max(60, (hours * 3600) / total)
+        interval_min = round(interval / 60, 1)
+
+        logger.info(
+            "Spread poster: %d jobs over %.1f hours → 1 post every %.1f min",
+            total, hours, interval_min,
+        )
+
+        for i, job in enumerate(jobs):
+            try:
+                with app.app_context():
+                    svc.send_batch_jobs([job], delay_seconds=0)
+                logger.debug("Posted job %d/%d: %s", i + 1, total, job.get("title"))
+            except Exception as exc:
+                logger.error("Failed to post job %s: %s", job.get("id"), exc)
+
+            if i < total - 1:          # no sleep after last job
+                time.sleep(interval)
+
+        logger.info("Spread poster complete: posted %d jobs", total)
 
 
 def send_daily_digest() -> Dict[str, Any]:

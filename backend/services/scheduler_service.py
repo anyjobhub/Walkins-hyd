@@ -129,14 +129,8 @@ class JobScheduler:
             replace_existing=True,
         )
 
-        # ── Telegram posting — every 15 minutes, always ───────────────────────
-        self._scheduler.add_job(
-            func=self._run_with_context(self._telegram_post_task),
-            trigger=IntervalTrigger(minutes=15),
-            id="telegram_poster",
-            name="Telegram Job Poster (every 15 min)",
-            replace_existing=True,
-        )
+        # ── Telegram posting handled automatically after each scrape ─────────
+        # (spread poster thread starts inside run_scraper_pipeline)
 
         # ── Daily deduplication — 3 AM IST ───────────────────────────────────
         self._scheduler.add_job(
@@ -179,16 +173,16 @@ class JobScheduler:
     # Task implementations
     # -------------------------------------------------------------------------
     def _naukri_task(self):
-        from tasks.scraper_tasks import run_naukri_scraper
-        run_naukri_scraper()
+        from tasks.scraper_tasks import run_scraper_pipeline
+        run_scraper_pipeline(sources=["naukri"], app=self.app)
 
     def _linkedin_task(self):
-        from tasks.scraper_tasks import run_linkedin_scraper
-        run_linkedin_scraper()
+        from tasks.scraper_tasks import run_scraper_pipeline
+        run_scraper_pipeline(sources=["linkedin"], app=self.app)
 
     def _indeed_task(self):
-        from tasks.scraper_tasks import run_indeed_scraper
-        run_indeed_scraper()
+        from tasks.scraper_tasks import run_scraper_pipeline
+        run_scraper_pipeline(sources=["indeed"], app=self.app)
 
     def _telegram_post_task(self):
         from tasks.scraper_tasks import post_unposted_jobs
