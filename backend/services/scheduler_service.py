@@ -83,69 +83,76 @@ class JobScheduler:
     def _register_jobs(self) -> None:
         """Add all scheduled tasks to the scheduler."""
 
-        # Naukri scraper — every 4 hours
+        # ── All 3 scrapers run together at 6 AM IST ──────────────────────────
         self._scheduler.add_job(
             func=self._run_with_context(self._naukri_task),
-            trigger=IntervalTrigger(hours=self.cfg.NAUKRI_INTERVAL_HOURS),
-            id="naukri_scraper",
-            name="Naukri Walk-in Scraper",
+            trigger=CronTrigger(hour=6, minute=0),   # 6:00 AM IST
+            id="naukri_scraper_am",
+            name="Naukri Walk-in Scraper (6 AM)",
             replace_existing=True,
         )
-
-        # LinkedIn scraper — every 6 hours
         self._scheduler.add_job(
             func=self._run_with_context(self._linkedin_task),
-            trigger=IntervalTrigger(hours=self.cfg.LINKEDIN_INTERVAL_HOURS),
-            id="linkedin_scraper",
-            name="LinkedIn RSS Scraper",
+            trigger=CronTrigger(hour=6, minute=5),   # 6:05 AM IST (staggered)
+            id="linkedin_scraper_am",
+            name="LinkedIn RSS Scraper (6 AM)",
             replace_existing=True,
         )
-
-        # Indeed scraper — every 6 hours
         self._scheduler.add_job(
             func=self._run_with_context(self._indeed_task),
-            trigger=IntervalTrigger(hours=self.cfg.INDEED_INTERVAL_HOURS),
-            id="indeed_scraper",
-            name="Indeed RSS Scraper",
+            trigger=CronTrigger(hour=6, minute=10),  # 6:10 AM IST (staggered)
+            id="indeed_scraper_am",
+            name="Indeed RSS Scraper (6 AM)",
             replace_existing=True,
         )
 
-        # Telegram posting — every 15 minutes
+        # ── All 3 scrapers run together at 6 PM IST ──────────────────────────
+        self._scheduler.add_job(
+            func=self._run_with_context(self._naukri_task),
+            trigger=CronTrigger(hour=18, minute=0),  # 6:00 PM IST
+            id="naukri_scraper_pm",
+            name="Naukri Walk-in Scraper (6 PM)",
+            replace_existing=True,
+        )
+        self._scheduler.add_job(
+            func=self._run_with_context(self._linkedin_task),
+            trigger=CronTrigger(hour=18, minute=5),  # 6:05 PM IST (staggered)
+            id="linkedin_scraper_pm",
+            name="LinkedIn RSS Scraper (6 PM)",
+            replace_existing=True,
+        )
+        self._scheduler.add_job(
+            func=self._run_with_context(self._indeed_task),
+            trigger=CronTrigger(hour=18, minute=10), # 6:10 PM IST (staggered)
+            id="indeed_scraper_pm",
+            name="Indeed RSS Scraper (6 PM)",
+            replace_existing=True,
+        )
+
+        # ── Telegram posting — every 15 minutes, always ───────────────────────
         self._scheduler.add_job(
             func=self._run_with_context(self._telegram_post_task),
-            trigger=IntervalTrigger(minutes=self.cfg.TELEGRAM_POST_INTERVAL_MINUTES),
+            trigger=IntervalTrigger(minutes=15),
             id="telegram_poster",
-            name="Telegram Job Poster",
+            name="Telegram Job Poster (every 15 min)",
             replace_existing=True,
         )
 
-        # Daily digest — 9 AM IST
-        self._scheduler.add_job(
-            func=self._run_with_context(self._daily_digest_task),
-            trigger=CronTrigger(
-                hour=self.cfg.DAILY_DIGEST_HOUR,
-                minute=self.cfg.DAILY_DIGEST_MINUTE,
-            ),
-            id="daily_digest",
-            name="Daily Digest (9 AM)",
-            replace_existing=True,
-        )
-
-        # Daily deduplication — 3 AM IST
+        # ── Daily deduplication — 3 AM IST ───────────────────────────────────
         self._scheduler.add_job(
             func=self._run_with_context(self._dedup_task),
             trigger=CronTrigger(hour=3, minute=0),
             id="deduplication",
-            name="Daily Deduplication",
+            name="Daily Deduplication (3 AM)",
             replace_existing=True,
         )
 
-        # Weekly cleanup — Sunday 2 AM IST
+        # ── Weekly cleanup — Sunday 2 AM IST ─────────────────────────────────
         self._scheduler.add_job(
             func=self._run_with_context(self._cleanup_task),
             trigger=CronTrigger(day_of_week="sun", hour=2, minute=0),
             id="cleanup",
-            name="Weekly Job Cleanup",
+            name="Weekly Job Cleanup (Sun 2 AM)",
             replace_existing=True,
         )
 
