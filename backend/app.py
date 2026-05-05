@@ -114,6 +114,20 @@ def create_app() -> Flask:
     with app.app_context():
         db.create_all()
 
+    # -------------------------------------------------------------------------
+    # Start background scheduler (works under gunicorn on Render)
+    # Only start in production and if not already running.
+    # -------------------------------------------------------------------------
+    import os
+    if os.environ.get("FLASK_ENV") == "production" or not Config.flask.DEBUG:
+        try:
+            from services.scheduler_service import JobScheduler
+            scheduler = JobScheduler(app)
+            scheduler.start()
+            app.logger.info("✅ Background scheduler started (scrapes every 4-6 hours)")
+        except Exception as exc:
+            app.logger.warning("Scheduler failed to start: %s", exc)
+
     return app
 
 
