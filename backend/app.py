@@ -13,31 +13,6 @@ from flask_cors import CORS
 from config import Config
 
 
-def ensure_playwright_installed():
-    """Ensure Playwright Chromium is available at runtime."""
-    import subprocess
-    import logging
-    from playwright.sync_api import sync_playwright
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        logger.info("Checking Playwright Chromium...")
-        with sync_playwright() as p:
-            # Try to launch; if it fails, it will raise an exception
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            browser.close()
-        logger.info("✅ Playwright ready")
-    except Exception:
-        logger.info("⚠️ Installing Playwright at runtime (Chromium)...")
-        try:
-            # Install chromium binary only
-            subprocess.run(["playwright", "install", "chromium"], check=True)
-            logger.info("✅ Playwright installed successfully at runtime")
-        except Exception as e:
-            logger.error("❌ Failed to install Playwright at runtime: %s", e)
-
-
 def create_app() -> Flask:
     """
     Application factory. Creates and configures the Flask app.
@@ -47,11 +22,9 @@ def create_app() -> Flask:
     """
     # Ensure logs directory exists before logger initialises
     Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Run Playwright check once at startup
-    ensure_playwright_installed()
 
     app = Flask(__name__)
+
 
     # -------------------------------------------------------------------------
     # Core Flask settings
