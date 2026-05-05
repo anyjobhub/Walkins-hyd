@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# render-build.sh — Custom build script for Render Native environment
-# This script installs Python dependencies and Playwright browsers.
+# render-build.sh — Custom build script for Render Native environment (Backend Root)
 
 # Exit on error
 set -o errexit
-
-# Move to the backend directory where requirements.txt is located
-cd backend
 
 # Install Python dependencies
 pip install --upgrade pip
