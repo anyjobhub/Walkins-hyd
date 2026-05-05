@@ -192,6 +192,7 @@ class BaseScraper(abc.ABC):
                     headers=merged_headers or None,
                     timeout=self.cfg.REQUEST_TIMEOUT,
                     allow_redirects=True,
+                    **kwargs,
                 )
                 self._request_count += 1
 
@@ -208,8 +209,8 @@ class BaseScraper(abc.ABC):
                         raise RateLimitError(f"Rate limited by {url}")
 
                 elif response.status_code == 403:
-                    logger.error("403 Forbidden for %s — aborting", url)
-                    raise ForbiddenError(f"Access forbidden: {url}")
+                    logger.error("403 Forbidden for %s", url)
+                    return response  # Return 403 response for handle in child
 
                 else:
                     logger.warning(

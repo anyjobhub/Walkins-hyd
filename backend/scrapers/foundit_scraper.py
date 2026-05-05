@@ -2,8 +2,8 @@
 scrapers/foundit_scraper.py — Foundit (Monster India) job scraper.
 
 Strategy:
-  1. Requests + Headers (User-Agent, Accept-Language, Referer)
-  2. Playwright (Fallback if 403 or blocked)
+  1. Playwright (Primary) — More reliable for bypassing 403 blocks.
+  2. Specific delays and User-Agent strings.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin, urlencode
 
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 from scrapers.base_scraper import BaseScraper
 from services.data_cleaner import DataCleaner
@@ -25,15 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_CITIES = ["Hyderabad", "Bangalore", "Chennai"]
 BASE_URL = "https://www.foundit.in"
 
-FOUNDIT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-}
-
 class FounditScraper(BaseScraper):
-    """Scrapes walk-in jobs from Foundit.in."""
+    """Scrapes walk-in jobs from Foundit.in using Playwright."""
 
     def __init__(self):
         super().__init__(source_name="foundit")
@@ -51,35 +45,50 @@ class FounditScraper(BaseScraper):
             }
             url = f"{BASE_URL}/srp/results?{urlencode(params)}"
             
-            # 1. Try requests with robust headers
-            html = None
-            try:
-                resp = self._get(url, headers=FOUNDIT_HEADERS)
-                if resp and resp.status_code == 200:
-                    html = resp.text
-                    logger.info("[foundit] %s p%d | Requests success", location, page)
-                elif resp and resp.status_code == 403:
-                    logger.warning("[foundit] %s p%d | 403 Forbidden, triggering Playwright fallback", location, page)
-            except Exception as e:
-                logger.error("[foundit] Request error for %s: %s", url, e)
-            
-            # 2. Try Playwright fallback
-            if not html or "No jobs found" in html:
-                logger.info("[foundit] Requests failed or empty, trying Playwright...")
-                html = self._get_playwright(url, wait_selector=".srpResultCard")
+            # Use Playwright exclusively as requested
+            html = self._fetch_with_playwright(url)
 
             if not html:
-                logger.error("[foundit] Both methods failed for %s", url)
+                logger.error("[foundit] Failed to fetch content for %s", url)
                 continue
 
             page_jobs = self._parse_html(html)
-            if not page_jobs: break
+            if not page_jobs: 
+                logger.warning("[foundit] No jobs found on page %d for %s", page, location)
+                break
             
             all_jobs.extend(page_jobs)
             logger.info("[foundit] %s p%d → %d jobs found", location, page, len(page_jobs))
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(5, 10))
 
         return all_jobs
+
+    def _fetch_with_playwright(self, url: str) -> Optional[str]:
+        """Custom fetch for Foundit to bypass 403."""
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+                page = context.new_page()
+                
+                logger.info("[foundit] Navigating to %s", url)
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                
+                # Requested delay to bypass detection
+                page.wait_for_timeout(3000)
+                
+                # Scroll a bit
+                page.mouse.wheel(0, 1000)
+                page.wait_for_timeout(1000)
+
+                content = page.content()
+                browser.close()
+                return content
+        except Exception as exc:
+            logger.error("[foundit] Playwright error: %s", exc)
+            return None
 
     def _parse_html(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "lxml")
@@ -101,7 +110,7 @@ class FounditScraper(BaseScraper):
             if link_el and link_el.get("href"):
                 href = link_el.get("href")
                 job["job_url"] = href if href.startswith("http") else urljoin(BASE_URL, href)
-                job["job_url"] = job["job_url"].split("?")[0] # Clean URL
+                job["job_url"] = job["job_url"].split("?")[0]
 
             comp_el = element.select_one(".companyName") or element.select_one(".company-name")
             job["company"] = comp_el.get_text(strip=True) if comp_el else "Unknown"
@@ -125,11 +134,10 @@ class FounditScraper(BaseScraper):
         all_jobs = []
         seen = set()
         for city in cities:
+            logger.info("━━━ Foundit city=%s ━━━", city)
             city_jobs = self.scrape_jobs(location=city)
             for j in city_jobs:
                 if j["job_url"] not in seen:
                     seen.add(j["job_url"])
                     all_jobs.append(j)
-        
-        logger.info("[foundit] Total unique relevant jobs: %d", len(all_jobs))
         return all_jobs

@@ -55,7 +55,7 @@ class TimesJobsScraper(BaseScraper):
             
             html = None
             try:
-                # Use verify=False to bypass SSL issues
+                # verify=False is now supported via **kwargs in BaseScraper._get()
                 resp = self._get(url, verify=False)
                 if resp and resp.status_code == 200:
                     html = resp.text
@@ -74,7 +74,7 @@ class TimesJobsScraper(BaseScraper):
             
             all_jobs.extend(page_jobs)
             logger.info("[timesjobs] %s p%d → %d jobs found", location, page, len(page_jobs))
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(4, 8))
 
         return all_jobs
 
@@ -96,7 +96,7 @@ class TimesJobsScraper(BaseScraper):
             job["job_url"] = title_el.get("href")
             
             if job["job_url"]:
-                job["job_url"] = job["job_url"].split("?")[0] # Clean URL
+                job["job_url"] = job["job_url"].split("?")[0]
 
             comp_el = element.select_one("h3.joblist-comp-name")
             job["company"] = comp_el.get_text(strip=True).split("(")[0].strip() if comp_el else "Unknown"
@@ -120,11 +120,10 @@ class TimesJobsScraper(BaseScraper):
         all_jobs = []
         seen = set()
         for city in cities:
+            logger.info("━━━ TimesJobs city=%s ━━━", city)
             city_jobs = self.scrape_jobs(location=city)
             for j in city_jobs:
                 if j["job_url"] not in seen:
                     seen.add(j["job_url"])
                     all_jobs.append(j)
-        
-        logger.info("[timesjobs] Total unique relevant jobs: %d", len(all_jobs))
         return all_jobs
