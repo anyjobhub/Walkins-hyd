@@ -1,48 +1,51 @@
 """
-scrapers/naukri_scraper.py — Naukri.com walk-in job scraper.
+scrapers/naukri_scraper.py — Naukri.com walk-in job scraper (HTML-based).
 
 Strategy:
-  - Uses Naukri's internal JSON API — no HTML parsing, no JS rendering needed.
-  - Multi-city scraping: Hyderabad, Bangalore, Chennai.
-  - Relevance filtering for walk-in / fresher / BPO jobs.
-  - Auto-deduplication by job URL across cities.
+  - Scrapes Naukri search pages directly using requests + BeautifulSoup.
+  - URL pattern: https://www.naukri.com/walk-in-jobs-in-{city}-{page}
+  - Multi-city: Hyderabad, Bangalore, Chennai.
+  - Robust fallback selectors for job cards.
+  - 2-5 second polite delay between requests.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
+import random
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup
 
 from scrapers.base_scraper import BaseScraper, ForbiddenError, RateLimitError
 from services.data_cleaner import DataCleaner
 
 logger = logging.getLogger(__name__)
 
-# ── Cities to scrape ──────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 DEFAULT_CITIES: List[str] = ["hyderabad", "bangalore", "chennai"]
+NAUKRI_BASE = "https://www.naukri.com"
 
-# ── Naukri JSON API ───────────────────────────────────────────────────────────
-NAUKRI_API   = "https://www.naukri.com/jobapi/v3/search"
-NAUKRI_BASE  = "https://www.naukri.com"
-
-# Required headers for Naukri's API to return JSON (not HTML)
+# Chrome-like headers to avoid bot detection
 NAUKRI_HEADERS = {
-    "appid":        "109",
-    "systemId":     "109",
-    "Accept":       "application/json",
-    "Content-Type": "application/json",
-    "Origin":       "https://www.naukri.com",
-    "Referer":      "https://www.naukri.com/",
-    "User-Agent":   (
+    "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
 }
 
-# ── Relevance keywords ────────────────────────────────────────────────────────
 RELEVANCE_KEYWORDS: List[str] = [
     "walk-in", "walkin", "walk in", "direct interview", "spot interview",
     "open interview", "open house",
@@ -55,7 +58,7 @@ RELEVANCE_KEYWORDS: List[str] = [
 
 
 class NaukriScraper(BaseScraper):
-    """Scrapes walk-in job listings from Naukri.com via their JSON API."""
+    """Scrapes walk-in jobs from Naukri.com using HTML + BeautifulSoup."""
 
     BASE_URL = NAUKRI_BASE
 
@@ -64,29 +67,32 @@ class NaukriScraper(BaseScraper):
         self.cleaner = DataCleaner()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Public API (keeps BaseScraper interface)
+    # Public API
     # ─────────────────────────────────────────────────────────────────────────
     def scrape_jobs(
         self,
         location: str = "hyderabad",
-        keywords: str = "walk-in interview",
+        keywords: str = "walk-in",
         max_pages: int = 2,
     ) -> List[Dict[str, Any]]:
-        """Scrape walk-in jobs for a single city via Naukri JSON API."""
+        """Scrape walk-in jobs for a single city."""
         all_jobs: List[Dict] = []
-        logger.info("Naukri | city=%-12s pages=%d", location, max_pages)
+        city_slug = location.lower().replace(" ", "-")
+        logger.info("Naukri | city=%s pages=%d", location, max_pages)
 
         for page in range(1, max_pages + 1):
             try:
-                page_jobs = self._fetch_api_page(keywords, location, page)
+                page_jobs = self._scrape_page(city_slug, page)
                 if not page_jobs:
-                    logger.info("Naukri | city=%s page=%d → 0 results, stopping", location, page)
+                    logger.info("Naukri | city=%s page=%d → 0 cards, stopping", location, page)
                     break
                 all_jobs.extend(page_jobs)
                 logger.info("Naukri | city=%s page=%d → %d jobs (total %d)",
                             location, page, len(page_jobs), len(all_jobs))
+                # Polite delay between pages
+                time.sleep(random.uniform(2, 5))
             except (RateLimitError, ForbiddenError) as exc:
-                logger.error("Naukri aborted for %s: %s", location, exc)
+                logger.error("Naukri blocked for %s: %s", location, exc)
                 break
             except Exception as exc:
                 logger.error("Naukri page error city=%s page=%d: %s", location, page, exc)
@@ -95,58 +101,97 @@ class NaukriScraper(BaseScraper):
         return all_jobs
 
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
-        """Parse a raw Naukri API job dict into our standard format."""
+        """Parse a single BeautifulSoup job card into a job dict."""
         try:
             job = self._build_base_job()
 
-            job["title"] = element.get("jobTitle", "").strip()
+            # ── Title ─────────────────────────────────────────────────────
+            title_el = (
+                element.select_one("a.title") or
+                element.select_one(".jobTitle a") or
+                element.select_one("a[class*='title']") or
+                element.select_one("h2 a") or
+                element.select_one("a[title]")
+            )
+            if not title_el:
+                return None
+            job["title"] = title_el.get_text(strip=True)
             if not job["title"]:
                 return None
 
-            job["company"] = element.get("companyName", "Unknown").strip()
+            # ── Job URL ───────────────────────────────────────────────────
+            href = title_el.get("href", "")
+            if href:
+                job["job_url"] = href if href.startswith("http") else urljoin(NAUKRI_BASE, href)
+                job["source_id"] = re.sub(r"[?#].*", "", href).strip("/").split("/")[-1]
 
-            # Job URL
-            jd_url = element.get("jdURL", "")
-            if jd_url:
-                job["job_url"] = (
-                    jd_url if jd_url.startswith("http")
-                    else urljoin(NAUKRI_BASE, jd_url)
+            # ── Company ───────────────────────────────────────────────────
+            company_el = (
+                element.select_one("a.comp-name") or
+                element.select_one(".companyInfo a") or
+                element.select_one("[class*='company-name']") or
+                element.select_one("[class*='companyName']")
+            )
+            job["company"] = company_el.get_text(strip=True) if company_el else "Unknown"
+
+            # ── Location ──────────────────────────────────────────────────
+            loc_el = (
+                element.select_one("li.location") or
+                element.select_one(".locWdth") or
+                element.select_one("span[class*='location']") or
+                element.select_one("[class*='loc']")
+            )
+            if loc_el:
+                job["location"] = loc_el.get_text(strip=True)
+
+            # ── Experience ────────────────────────────────────────────────
+            exp_el = (
+                element.select_one("li.experience") or
+                element.select_one(".expwdth") or
+                element.select_one("span[class*='experience']")
+            )
+            if exp_el:
+                job["experience"] = exp_el.get_text(strip=True)
+                job.update(self.cleaner.normalize_experience(job["experience"]))
+
+            # ── Salary ────────────────────────────────────────────────────
+            sal_el = (
+                element.select_one("li.salary") or
+                element.select_one(".sal") or
+                element.select_one("span[class*='salary']")
+            )
+            if sal_el:
+                job["salary"] = sal_el.get_text(strip=True)
+                job.update(self.cleaner.normalize_salary(job["salary"]))
+
+            # ── Skills / Tags ─────────────────────────────────────────────
+            skills_els = element.select("li.tag, .tags li, [class*='skill'], ul.tags span")
+            if skills_els:
+                job["skills"] = self.cleaner.clean_skills_array(
+                    ", ".join(el.get_text(strip=True) for el in skills_els)
                 )
-                job["source_id"] = jd_url.strip("/").split("/")[-1].split("?")[0]
 
-            # Placeholders: location / experience / salary
-            for ph in element.get("placeholders", []):
-                ph_type  = ph.get("type", "")
-                ph_label = ph.get("label", "").strip()
-                if not ph_label:
-                    continue
-                if ph_type == "location":
-                    job["location"] = ph_label
-                elif ph_type == "experience":
-                    job["experience"] = ph_label
-                    job.update(self.cleaner.normalize_experience(ph_label))
-                elif ph_type == "salary":
-                    job["salary"] = ph_label
-                    job.update(self.cleaner.normalize_salary(ph_label))
-
-            # Skills / tags
-            tags = element.get("tagsAndSkills", "")
-            if tags:
-                job["skills"] = self.cleaner.clean_skills_array(tags)
-
-            # Description snippet (from listing)
-            snippet = element.get("jobDescription", "").strip()
+            # ── Description snippet ───────────────────────────────────────
+            desc_el = element.select_one(".job-description, [class*='desc'], .jd-desc")
+            snippet = desc_el.get_text(strip=True) if desc_el else ""
             job["job_description"] = snippet
 
-            # Walk-in / fresher detection
+            # ── Walk-in / Fresher detection ───────────────────────────────
             combined = f"{job['title']} {snippet} {job.get('location', '')}"
-            job["is_walkin"]          = self._detect_walkin(combined)
+            job["is_walkin"]           = self._detect_walkin(combined)
             job["is_fresher_friendly"] = self._detect_fresher(combined)
+
+            # ── Walk-in detail extraction ─────────────────────────────────
+            if snippet:
+                walkin_info = self.extract_walkin_details(snippet)
+                for key, val in walkin_info.items():
+                    if val and not job.get(key):
+                        job[key] = val
 
             return job
 
         except Exception as exc:
-            logger.debug("Failed to parse Naukri job item: %s", exc)
+            logger.debug("Failed to parse Naukri job card: %s", exc)
             return None
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -155,15 +200,11 @@ class NaukriScraper(BaseScraper):
     def scrape_all_cities(
         self,
         cities: List[str] = None,
-        keywords: str = "walk-in interview",
+        keywords: str = "walk-in",
         max_pages: int = 2,
-        enrich: bool = False,        # enriching via full-page fetch is slow; skip by default
         filter_relevant: bool = True,
     ) -> List[Dict[str, Any]]:
-        """
-        Scrape walk-in jobs across Hyderabad, Bangalore, Chennai.
-        Deduplicates by job URL across cities.
-        """
+        """Scrape Hyderabad, Bangalore, Chennai with dedup + relevance filter."""
         cities = cities or DEFAULT_CITIES
         seen_urls: Set[str] = set()
         all_jobs: List[Dict[str, Any]] = []
@@ -183,117 +224,78 @@ class NaukriScraper(BaseScraper):
                     continue
                 if url:
                     seen_urls.add(url)
-
-                if enrich:
-                    job = self.enrich_with_walkin_details(job)
-
                 if filter_relevant and not self.is_relevant(job):
-                    logger.debug("Filtered out: %s", job.get("title"))
+                    logger.debug("Filtered: %s", job.get("title"))
                     continue
-
                 all_jobs.append(job)
                 added += 1
 
             logger.info("Naukri | city=%-12s scraped=%d  kept=%d", city, len(city_jobs), added)
 
-        logger.info("Naukri scrape_all_cities done | cities=%s total=%d", cities, len(all_jobs))
+        logger.info("Naukri scrape_all_cities done | total=%d", len(all_jobs))
         return all_jobs
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Internal: JSON API fetcher
+    # Internal: HTML page scraper
     # ─────────────────────────────────────────────────────────────────────────
-    def _fetch_api_page(
-        self, keyword: str, location: str, page: int
-    ) -> List[Dict[str, Any]]:
-        """Call Naukri's JSON search API for one page."""
-        params = {
-            "noOfResults":  20,
-            "urlType":      "search_by_keyword",
-            "searchType":   "adv",
-            "keyword":      keyword,
-            "location":     location,
-            "pageNo":       page,
-            "seoKey":       f"walkin-jobs-in-{location}",
-        }
-        api_url = NAUKRI_API
-        logger.info("Naukri API GET %s?keyword=%s&location=%s&pageNo=%d",
-                    api_url, keyword, location, page)
+    def _build_search_url(self, city_slug: str, page: int) -> str:
+        """
+        Build Naukri walk-in search URL.
+        Pattern: https://www.naukri.com/walk-in-jobs-in-{city}-{page}
+        """
+        return f"{NAUKRI_BASE}/walk-in-jobs-in-{city_slug}-{page}"
 
-        response = self._get(api_url, params=params, headers=NAUKRI_HEADERS, check_robots=False)
+    def _scrape_page(self, city_slug: str, page: int) -> List[Dict[str, Any]]:
+        """Fetch one Naukri search page and extract all job cards."""
+        url = self._build_search_url(city_slug, page)
+        logger.info("Naukri fetching: %s", url)
+
+        response = self._get(url, headers=NAUKRI_HEADERS, check_robots=False)
         if not response:
-            logger.warning("Naukri API returned no response for city=%s page=%d", location, page)
+            logger.warning("Naukri: no response for %s", url)
             return []
 
-        # Check if response is JSON
-        content_type = response.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            logger.warning(
-                "Naukri API returned non-JSON (Content-Type: %s) for city=%s — "
-                "likely blocked. First 200 chars: %s",
-                content_type, location, response.text[:200],
-            )
+        if response.status_code != 200:
+            logger.warning("Naukri: HTTP %d for %s", response.status_code, url)
             return []
 
-        try:
-            data = response.json()
-        except Exception as exc:
-            logger.error("Naukri API JSON parse failed: %s | body=%s", exc, response.text[:300])
-            return []
+        soup = BeautifulSoup(response.text, "lxml")
 
-        items = data.get("jobDetails", [])
-        logger.info("Naukri API | city=%s page=%d | noOfJobs=%s parsed=%d",
-                    location, page, data.get("noOfJobs", "?"), len(items))
+        # Try multiple selectors — Naukri changes class names frequently
+        job_cards = (
+            soup.select("article.jobTuple") or
+            soup.select(".srp-jobtuple-wrapper") or
+            soup.select("[class*='jobTuple']") or
+            soup.select(".job-tuple") or
+            soup.select("article[class*='job']") or
+            soup.select("div[class*='jobTuple']")
+        )
+
+        logger.info("Naukri | url=%s → %d job cards found", url, len(job_cards))
+
+        if not job_cards:
+            # Debug: log page snippet to understand structure
+            body_preview = soup.body.get_text()[:300] if soup.body else "no body"
+            logger.debug("Naukri page preview: %s", body_preview)
+            return []
 
         jobs = []
-        for item in items:
-            parsed = self.parse_job_listing(item)
+        for card in job_cards:
+            parsed = self.parse_job_listing(card)
             if parsed and parsed.get("title"):
                 jobs.append(parsed)
+
+        logger.info("Naukri | url=%s → %d valid jobs extracted", url, len(jobs))
         return jobs
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Walk-in detail enrichment (optional, slow — fetches full job page)
-    # ─────────────────────────────────────────────────────────────────────────
-    def enrich_with_walkin_details(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """Fetch the full job page to extract walk-in date/time/venue/contact."""
-        if not job.get("job_url"):
-            return job
-        try:
-            resp = self._get(job["job_url"], check_robots=False)
-            if not resp:
-                return job
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(resp.text, "lxml")
-            desc_el = (
-                soup.select_one(".job-desc") or
-                soup.select_one("#job-description") or
-                soup.select_one("[class*='description']") or
-                soup.select_one(".jd-desc")
-            )
-            if desc_el:
-                full_text = desc_el.get_text(separator="\n", strip=True)
-                job["job_description"] = full_text
-                job["is_walkin"]           = self._detect_walkin(full_text) or job.get("is_walkin", False)
-                job["is_fresher_friendly"] = self._detect_fresher(full_text) or job.get("is_fresher_friendly", False)
-                walkin_info = self.extract_walkin_details(full_text)
-                for key, val in walkin_info.items():
-                    if val and not job.get(key):
-                        job[key] = val
-        except Exception as exc:
-            logger.debug("enrich_with_walkin_details failed: %s", exc)
-        return job
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Walk-in field extractor
+    # Walk-in detail extractor
     # ─────────────────────────────────────────────────────────────────────────
     def extract_walkin_details(self, text: str) -> Dict[str, Any]:
         """Extract walkin_dates, walkin_time, address, contact_person, contact_phone."""
         result: Dict[str, Any] = {
-            "walkin_dates":   None,
-            "walkin_time":    None,
-            "address":        None,
-            "contact_person": None,
-            "contact_phone":  None,
+            "walkin_dates": None, "walkin_time": None,
+            "address": None, "contact_person": None, "contact_phone": None,
         }
         if not text:
             return result
@@ -304,7 +306,7 @@ class NaukriScraper(BaseScraper):
             r"|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
         )
         for pat in [
-            rf"(\d{{1,2}}(?:st|nd|rd|th)?\s*(?:[&,and/-]+\s*\d{{1,2}}(?:st|nd|rd|th)?\s*)?{MONTHS}(?:\s+\d{{4}})?)",
+            rf"(\d{{1,2}}(?:st|nd|rd|th)?\s*(?:[&,/-]+\s*\d{{1,2}}(?:st|nd|rd|th)?\s*)?{MONTHS}(?:\s+\d{{4}})?)",
             rf"(?:walk[- ]?in\s+)?date[s]?[:\s]+([\w\s,&/-]{{5,40}})",
             rf"({MONTHS}\s+\d{{1,2}}(?:,\s*\d{{4}})?)",
         ]:
@@ -335,10 +337,8 @@ class NaukriScraper(BaseScraper):
             r"([A-Za-z][A-Za-z\s]{2,40}?)(?:\s*[-|,]|\s*\d|$)",
             text, re.IGNORECASE,
         )
-        if cp:
-            name = cp.group(1).strip()
-            if len(name) >= 3:
-                result["contact_person"] = name
+        if cp and len(cp.group(1).strip()) >= 3:
+            result["contact_person"] = cp.group(1).strip()
 
         ph = re.search(
             r"(?:contact|call|mobile|phone|tel|whatsapp)[:\s]*([+]?[\d][\d\s\-().]{7,14}\d)",
@@ -367,16 +367,13 @@ class NaukriScraper(BaseScraper):
     # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
     def to_telegram_format(job: Dict[str, Any]) -> str:
-        """Format a job dict into a Telegram-ready message string."""
         def _f(val, default="—"):
             return str(val).strip() if val else default
 
         lines = [
-            f"🔥 {_f(job.get('title'))}",
-            "",
+            f"🔥 {_f(job.get('title'))}", "",
             f"🏢 {_f(job.get('company'))}",
-            f"📍 {_f(job.get('location'))}",
-            "",
+            f"📍 {_f(job.get('location'))}", "",
             f"💰 Salary: {_f(job.get('salary'))}",
             f"📊 Experience: {_f(job.get('experience'))}",
         ]
@@ -386,9 +383,8 @@ class NaukriScraper(BaseScraper):
                       f"   {_f(job.get('walkin_time'))}"]
         if job.get("address"):
             lines += ["", "📍 Address:", f"   {_f(job.get('address'))}"]
-        parts = [_f(p) for p in [job.get("contact_person"), job.get("contact_phone")] if p]
+        parts = [str(p) for p in [job.get("contact_person"), job.get("contact_phone")] if p]
         if parts:
             lines += ["", f"📞 Contact: {' | '.join(parts)}"]
         lines += ["", "🚨 JOB LINK:", f"{_f(job.get('job_url'), '#')}"]
-
         return "\n".join(lines)[:4096]

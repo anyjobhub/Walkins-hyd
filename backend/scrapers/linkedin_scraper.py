@@ -57,47 +57,48 @@ class LinkedInScraper(BaseScraper):
     # -------------------------------------------------------------------------
     def scrape_jobs(
         self,
-        location: str = "India",
-        keywords: str = "walk-in interview",
+        location: str = "Hyderabad",
+        keywords: str = "walk-in",
         max_pages: int = 3,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch LinkedIn job listings from the RSS feed.
-
-        LinkedIn RSS doesn't have traditional "pages"; we use offset parameter.
+        Fetch LinkedIn job listings using multiple targeted RSS queries.
+        Runs 5 queries per city to maximize results.
         """
-        all_jobs: List[Dict] = []
-        logger.info("Starting LinkedIn RSS scrape | location=%s", location)
-
+        # Multiple targeted queries — each hits a different audience
         search_queries = [
-            f"{keywords}",
-            "walk-in fresher",
-            "direct interview walk-in",
+            "walk in interview",
+            "walk-in drive",
+            "fresher jobs",
+            "bpo jobs",
+            "customer support jobs",
         ]
+
+        all_jobs: List[Dict] = []
+        seen_urls: Set[str] = set()
+
+        logger.info("LinkedIn | city=%s | running %d queries", location, len(search_queries))
 
         for query in search_queries:
             try:
                 jobs = self._fetch_rss(query, location)
-                all_jobs.extend(jobs)
-                logger.info(
-                    "LinkedIn RSS query '%s': found %d jobs", query, len(jobs)
-                )
+                new = 0
+                for job in jobs:
+                    url = job.get("job_url", "")
+                    if url and url in seen_urls:
+                        continue
+                    if url:
+                        seen_urls.add(url)
+                    all_jobs.append(job)
+                    new += 1
+                logger.info("LinkedIn | city=%s query='%s' → %d jobs (%d new)",
+                            location, query, len(jobs), new)
             except Exception as exc:
-                logger.error(
-                    "Error fetching LinkedIn RSS for '%s': %s", query, exc
-                )
+                logger.error("LinkedIn RSS error city=%s query='%s': %s", location, query, exc)
 
-        # Deduplicate by job_url within this batch
-        seen_urls = set()
-        unique_jobs = []
-        for job in all_jobs:
-            url = job.get("job_url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                unique_jobs.append(job)
+        logger.info("LinkedIn | city=%s done | total_unique=%d", location, len(all_jobs))
+        return all_jobs
 
-        logger.info("LinkedIn scrape complete. Total unique jobs: %d", len(unique_jobs))
-        return unique_jobs
 
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
         """
