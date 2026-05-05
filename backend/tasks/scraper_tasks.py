@@ -4,6 +4,7 @@ Integrated with the database and deduplication services.
 """
 
 import logging
+from typing import Any, Dict, List, Optional
 from flask import Flask
 from services.apify_service import fetch_jobs_from_apify
 from services.deduplication import DeduplicationService
