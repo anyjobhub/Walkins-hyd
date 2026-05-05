@@ -61,7 +61,7 @@ def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
             }
 
             # Using johnvc~Google-Jobs-Scraper as requested
-            run = client.actor("johnvc~Google-Jobs-Scraper").call(run_input=run_input)
+            run = client.actor("johnvc/Google-Jobs-Scraper").call(run_input=run_input)
             
             city_raw_count = 0
             for item in client.dataset(run["defaultDatasetId"]).iterate_items():
