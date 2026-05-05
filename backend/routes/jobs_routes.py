@@ -12,13 +12,19 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from services.database_service import JobRepository
 
 logger = logging.getLogger(__name__)
 jobs_bp = Blueprint("jobs", __name__)
-repo = JobRepository()
+
+
+def get_repo() -> JobRepository:
+    """Return a per-request JobRepository (requires app context)."""
+    if "repo" not in g:
+        g.repo = JobRepository()
+    return g.repo
 
 
 def _parse_bool(val: str) -> bool:
@@ -52,7 +58,7 @@ def get_jobs():
         salary_min_raw = request.args.get("salary_min")
         salary_max_raw = request.args.get("salary_max")
 
-        result = repo.get_jobs_by_filter(
+        result = get_repo().get_jobs_by_filter(
             location=request.args.get("location"),
             company=request.args.get("company"),
             walkin_only=_parse_bool(request.args.get("walkin_only", False)),
@@ -94,7 +100,7 @@ def search_jobs():
         page = max(1, int(request.args.get("page", 1)))
         limit = min(50, max(1, int(request.args.get("limit", 20))))
 
-        result = repo.get_jobs_by_filter(
+        result = get_repo().get_jobs_by_filter(
             search_query=q,
             page=page,
             limit=limit,
@@ -122,7 +128,7 @@ def get_walkin_jobs():
     try:
         location = request.args.get("location", "")
         limit = min(100, max(1, int(request.args.get("limit", 50))))
-        jobs = repo.get_walkin_jobs(location=location, limit=limit)
+        jobs = get_repo().get_walkin_jobs(location=location, limit=limit)
         return jsonify({"jobs": jobs, "total": len(jobs), "location": location}), 200
     except Exception as e:
         logger.error("Error in GET /api/jobs/walkin: %s", e, exc_info=True)
@@ -136,7 +142,7 @@ def get_walkin_jobs():
 def get_job(job_id: int):
     """Get full details for a single job by ID."""
     try:
-        job = repo.get_job_by_id(job_id)
+        job = get_repo().get_job_by_id(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
         return jsonify(job), 200
@@ -152,7 +158,7 @@ def get_job(job_id: int):
 def get_stats():
     """Return aggregated system statistics."""
     try:
-        stats = repo.get_stats()
+        stats = get_repo().get_stats()
         return jsonify(stats), 200
     except Exception as e:
         logger.error("Error in GET /api/stats: %s", e, exc_info=True)
