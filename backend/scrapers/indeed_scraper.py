@@ -57,23 +57,22 @@ class IndeedScraper(BaseScraper):
     # -------------------------------------------------------------------------
     def scrape_jobs(
         self,
-        location: str = "India",
-        keywords: str = "walk-in interview",
-        max_pages: int = 3,
+        location: str = "Hyderabad",
+        keywords: str = "walk-in",
+        max_pages: int = 2,
     ) -> List[Dict[str, Any]]:
-        """
-        Scrape Indeed jobs from RSS for multiple keyword variations.
-
-        Indeed RSS supports a 'start' parameter for pagination (0, 10, 20 …).
-        """
-        all_jobs: List[Dict] = []
-        logger.info("Starting Indeed RSS scrape | location=%s", location)
-
+        """Scrape Indeed jobs using 5 targeted queries per city."""
         search_queries = [
-            "walk-in interview",
-            "walkin interview freshers",
-            "walk-in jobs today",
+            "walk in interview",
+            "walk-in drive",
+            "fresher jobs",
+            "bpo customer support",
+            "walkin freshers",
         ]
+
+        all_jobs: List[Dict] = []
+        seen_urls: Set[str] = set()
+        logger.info("Indeed | city=%s | running %d queries", location, len(search_queries))
 
         for query in search_queries:
             for page in range(max_pages):
@@ -82,28 +81,23 @@ class IndeedScraper(BaseScraper):
                     jobs = self._fetch_rss(query, location, start=start)
                     if not jobs:
                         break
-                    all_jobs.extend(jobs)
-                    logger.info(
-                        "Indeed RSS '%s' page %d: %d jobs", query, page + 1, len(jobs)
-                    )
+                    new = 0
+                    for job in jobs:
+                        url = job.get("job_url", "")
+                        if url and url in seen_urls:
+                            continue
+                        if url:
+                            seen_urls.add(url)
+                        all_jobs.append(job)
+                        new += 1
+                    logger.info("Indeed | city=%s query='%s' p%d → %d jobs (%d new)",
+                                location, query, page + 1, len(jobs), new)
                 except Exception as exc:
-                    logger.error(
-                        "Error fetching Indeed RSS '%s' page %d: %s",
-                        query, page + 1, exc,
-                    )
+                    logger.error("Indeed RSS error city=%s query='%s': %s", location, query, exc)
                     break
 
-        # Deduplicate by job_url within batch
-        seen_urls: set = set()
-        unique_jobs = []
-        for job in all_jobs:
-            url = job.get("job_url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                unique_jobs.append(job)
-
-        logger.info("Indeed scrape complete. Total unique jobs: %d", len(unique_jobs))
-        return unique_jobs
+        logger.info("Indeed | city=%s done | total_unique=%d", location, len(all_jobs))
+        return all_jobs
 
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
         """
@@ -223,13 +217,11 @@ class IndeedScraper(BaseScraper):
             "q": keywords,
             "l": location,
             "sort": "date",
-            "fromage": "1",   # Jobs from last 1 day
+            "fromage": "3",   # Jobs from last 3 days (not 1 — too restrictive)
             "start": start,
         }
         url = f"{self.RSS_BASE}?{urlencode(params)}"
-
-        self._sleep_between_requests()
-        logger.debug("Fetching Indeed RSS: %s", url)
+        logger.info("Indeed RSS fetching: %s", url)
 
         feed = feedparser.parse(
             url,

@@ -122,19 +122,13 @@ def post_unposted_jobs() -> Dict[str, Any]:
 def post_jobs_spread_over_hours(app, hours: float = 4.0) -> None:
     """
     Post ALL unposted jobs spread evenly over `hours` hours.
-
-    Called in a background thread automatically after every scrape.
-    Dynamically calculates interval:
-      20 jobs → 1 every 12 min → 4 hours
-      48 jobs → 1 every 5 min  → 4 hours
-     100 jobs → 1 every 2.4min → 4 hours
-
-    Requires Flask `app` to maintain DB context across sleeps.
+    Runs in a background daemon thread after each scrape.
     """
     import time
     from services.database_service import JobRepository
     from services.telegram_service import TelegramService
 
+    # Single app context wraps the entire function — NO nested contexts
     with app.app_context():
         svc = TelegramService()
         if not svc.is_configured:
@@ -149,24 +143,22 @@ def post_jobs_spread_over_hours(app, hours: float = 4.0) -> None:
             return
 
         total = len(jobs)
-        # Spread evenly: minimum 60 sec between posts
-        interval = max(60, (hours * 3600) / total)
+        interval = max(60, (hours * 3600) / total)  # min 60 sec between posts
         interval_min = round(interval / 60, 1)
-
         logger.info(
-            "Spread poster: %d jobs over %.1f hours → 1 post every %.1f min",
+            "Spread poster: %d jobs over %.1fh → 1 post every %.1f min",
             total, hours, interval_min,
         )
 
         for i, job in enumerate(jobs):
             try:
-                with app.app_context():
-                    svc.send_batch_jobs([job], delay_seconds=0)
+                # No nested with app.app_context() — we're already inside one
+                svc.send_batch_jobs([job], delay_seconds=0)
                 logger.debug("Posted job %d/%d: %s", i + 1, total, job.get("title"))
             except Exception as exc:
                 logger.error("Failed to post job %s: %s", job.get("id"), exc)
 
-            if i < total - 1:          # no sleep after last job
+            if i < total - 1:       # no sleep after last job
                 time.sleep(interval)
 
         logger.info("Spread poster complete: posted %d jobs", total)
@@ -292,15 +284,21 @@ def _run_scraper_task(source: str, location: str) -> Dict[str, Any]:
         if not scraper:
             raise ValueError(f"Unknown source: {source}")
 
-        # Naukri uses multi-city scraper; others use single location
+        # Naukri/LinkedIn/Indeed all use scrape_all_cities() for multi-city support
         if source == "naukri":
             logger.info("Starting naukri scraper | cities=Hyderabad,Bangalore,Chennai")
+            raw_jobs = scraper.scrape_all_cities()
+        elif source == "linkedin":
+            logger.info("Starting linkedin scraper | cities=Hyderabad,Bangalore,Chennai")
+            raw_jobs = scraper.scrape_all_cities()
+        elif source == "indeed":
+            logger.info("Starting indeed scraper | cities=Hyderabad,Bangalore,Chennai")
             raw_jobs = scraper.scrape_all_cities()
         else:
             logger.info("Starting %s scraper | location=%s", source, location)
             raw_jobs = scraper.scrape_jobs(location=location)
         jobs_found = len(raw_jobs)
-        logger.info("%s scraper found %d jobs", source, jobs_found)
+        logger.info("%s scraper found %d jobs total", source, jobs_found)
 
         # ── Persist ─────────────────────────────────────────────────────────
         repo = JobRepository()
