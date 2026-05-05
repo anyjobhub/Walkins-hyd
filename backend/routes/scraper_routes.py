@@ -62,10 +62,10 @@ def trigger_scraper():
         }), 409
 
     data = request.get_json(silent=True) or {}
-    sources = data.get("sources", ["naukri", "linkedin", "indeed"])
+    sources = data.get("sources", ["naukri", "foundit", "timesjobs"])
     location = data.get("location", "India")
 
-    valid_sources = {"naukri", "linkedin", "indeed"}
+    valid_sources = {"naukri", "foundit", "timesjobs"}
     sources = [s for s in sources if s in valid_sources]
 
     if not sources:
@@ -301,7 +301,7 @@ async function api(path, method='GET') {{
 async function startScrape() {{
   document.getElementById('btn-start').disabled = true;
   document.getElementById('btn-stop').disabled  = false;
-  appendLog('info', '▶ Starting scrape — Naukri + LinkedIn + Indeed...');
+  appendLog('info', '▶ Starting scrape — Naukri + Foundit + TimesJobs...');
   await api('/start');
   startPolling();
 }}
@@ -417,7 +417,7 @@ def scrape_start():
             "started_at": datetime.now(timezone.utc).isoformat(),
             "jobs_added": 0,
             "jobs_found": 0,
-            "log":        ["▶ Scrape started — Naukri + LinkedIn + Indeed"],
+            "log":        ["▶ Scrape started — Naukri + Foundit + TimesJobs"],
             "stop_flag":  False,
             "jobs":       [],
         })
@@ -435,7 +435,7 @@ def scrape_start():
         # Use captured app — not current_app (which has no context in a thread)
         with app.app_context():
             try:
-                for source in ["naukri", "linkedin", "indeed"]:
+                for source in ["naukri", "foundit", "timesjobs"]:
                     if _scrape_state["stop_flag"]:
                         _log(f"⬛ Stopped before {source}")
                         break
