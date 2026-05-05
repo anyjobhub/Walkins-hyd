@@ -1,13 +1,8 @@
 """
-scrapers/base_scraper.py — Abstract base class for all job scrapers.
+scrapers/base_scraper.py — Core base class for all job scrapers.
 
-Provides:
-  - Rate limiting with configurable delay range
-  - Exponential backoff retry logic
-  - User-Agent rotation
-  - robots.txt compliance check
-  - Structured logging
-  - Abstract interface all scrapers must implement
+Provides unified methods for HTTP requests, browser automation (Playwright),
+data cleaning, and rate limiting.
 """
 
 from __future__ import annotations
@@ -18,12 +13,10 @@ import random
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
-from urllib.robotparser import RobotFileParser
+from urllib.parse import urljoin
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from playwright.sync_api import sync_playwright
 
 from config import Config
 
@@ -31,167 +24,59 @@ logger = logging.getLogger(__name__)
 
 
 class ScraperError(Exception):
-    """Base exception for all scraper errors."""
-    pass
+    """Base exception for scraper-related issues."""
 
 
 class RateLimitError(ScraperError):
-    """Raised when the target server returns 429 Too Many Requests."""
-    pass
+    """Raised when the target site blocks us via 429."""
 
 
 class ForbiddenError(ScraperError):
-    """Raised when the target server returns 403 Forbidden."""
-    pass
+    """Raised when the target site blocks us via 403."""
 
 
 class BaseScraper(abc.ABC):
     """
-    Abstract base class for all job scrapers.
-
-    Subclasses must implement:
-      - scrape_jobs(location, keywords) -> List[Dict]
-      - parse_job_listing(element) -> Dict
-
-    Usage:
-        class NaukriScraper(BaseScraper):
-            def scrape_jobs(self, ...):
-                ...
+    Abstract Base Class for all job scrapers.
+    Handles common logic like headers, proxying (if needed), and rate limiting.
     """
-
-    # Maximum number of consecutive failures before giving up
-    MAX_CONSECUTIVE_FAILURES = 3
 
     def __init__(self, source_name: str):
         self.source_name = source_name
         self.cfg = Config.scraper
+        self._session = requests.Session()
         self._request_count = 0
         self._consecutive_failures = 0
-        self._session = self._build_session()
-        logger.info("Initialised %s scraper", source_name)
+        self._last_request_time = 0
 
     # -------------------------------------------------------------------------
-    # Session setup
-    # -------------------------------------------------------------------------
-    def _build_session(self) -> requests.Session:
-        """
-        Build a requests.Session with a retry adapter and default headers.
-
-        The adapter retries on 500/502/503/504 (server errors) but NOT on
-        429 or 403 — those are handled by our own logic.
-        """
-        session = requests.Session()
-
-        retry_strategy = Retry(
-            total=self.cfg.MAX_RETRIES,
-            backoff_factor=2,                  # 2s, 4s, 8s …
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "HEAD"],
-            raise_on_status=False,
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-
-        # Set a default user agent (rotated per-request below)
-        session.headers.update(self.cfg.DEFAULT_HEADERS)
-        session.headers["User-Agent"] = self._random_user_agent()
-
-        return session
-
-    def _random_user_agent(self) -> str:
-        """Return a random user-agent string from the configured list."""
-        return random.choice(self.cfg.USER_AGENTS)
-
-    # -------------------------------------------------------------------------
-    # Rate Limiting
-    # -------------------------------------------------------------------------
-    def _sleep_between_requests(self) -> None:
-        """Sleep for a random duration within the configured delay range."""
-        delay = random.uniform(self.cfg.DELAY_MIN, self.cfg.DELAY_MAX)
-        logger.debug("Rate limiting: sleeping %.2fs before next request", delay)
-        time.sleep(delay)
-
-    def _exponential_backoff(self, attempt: int) -> None:
-        """
-        Sleep with exponential backoff: 2^attempt seconds (capped at 60s).
-
-        Used after errors to avoid hammering the server.
-        """
-        wait = min(2 ** attempt, 60)
-        logger.warning(
-            "Backoff attempt %d: sleeping %ds before retry", attempt, wait
-        )
-        time.sleep(wait)
-
-    # -------------------------------------------------------------------------
-    # robots.txt compliance
-    # -------------------------------------------------------------------------
-    def _is_allowed_by_robots(self, url: str) -> bool:
-        """
-        Check if our user-agent is allowed to fetch the given URL
-        according to the site's robots.txt.
-
-        Returns True if allowed (or if robots.txt can't be fetched).
-        """
-        try:
-            parsed = urlparse(url)
-            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-            rp = RobotFileParser()
-            rp.set_url(robots_url)
-            rp.read()
-            allowed = rp.can_fetch("*", url)
-            if not allowed:
-                logger.warning(
-                    "robots.txt disallows fetching %s — skipping", url
-                )
-            return allowed
-        except Exception as exc:
-            logger.debug("Could not check robots.txt for %s: %s", url, exc)
-            return True   # Fail open — let subclass decide
-
-    # -------------------------------------------------------------------------
-    # Safe HTTP GET
+    # HTTP: Requests
     # -------------------------------------------------------------------------
     def _get(
         self,
         url: str,
-        params: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        check_robots: bool = False,
-    ) -> Optional[requests.Response]:
+        headers: Dict[str, Any] = None,
+        verify: bool = True,
+        timeout: int = 30,
+        **kwargs,
+    ) -> requests.Response:
         """
-        Perform a GET request with:
-          - robots.txt check (optional)
-          - Rate limiting sleep
-          - User-Agent rotation
-          - Error handling (403, 429, timeouts)
-
-        Returns:
-            requests.Response if successful, None on error.
+        Wrapped GET request with retries and signature fix.
+        Now accepts verify and timeout parameters directly.
         """
-        if check_robots and not self._is_allowed_by_robots(url):
-            return None
-
-        self._sleep_between_requests()
-
-        # Rotate user agent each request
-        if self.cfg.ROTATE_USER_AGENTS:
+        if "User-Agent" not in self._session.headers:
             self._session.headers["User-Agent"] = self._random_user_agent()
 
-        merged_headers = {}
-        if headers:
-            merged_headers.update(headers)
+        merged_headers = headers or {}
 
         for attempt in range(self.cfg.MAX_RETRIES):
             try:
-                logger.debug("GET %s (attempt %d)", url, attempt + 1)
+                self._sleep_between_requests()
                 response = self._session.get(
                     url,
-                    params=params,
                     headers=merged_headers or None,
-                    timeout=self.cfg.REQUEST_TIMEOUT,
-                    allow_redirects=True,
+                    verify=verify,
+                    timeout=timeout,
                     **kwargs,
                 )
                 self._request_count += 1
@@ -199,54 +84,28 @@ class BaseScraper(abc.ABC):
                 if response.status_code == 200:
                     self._consecutive_failures = 0
                     return response
-
-                elif response.status_code == 429:
-                    logger.error(
-                        "429 Too Many Requests from %s — backing off", url
-                    )
-                    self._exponential_backoff(attempt + 1)
-                    if attempt == self.cfg.MAX_RETRIES - 1:
-                        raise RateLimitError(f"Rate limited by {url}")
-
                 elif response.status_code == 403:
-                    logger.error("403 Forbidden for %s", url)
-                    return response  # Return 403 response for handle in child
-
+                    logger.warning("[%s] 403 Forbidden for %s", self.source_name, url)
+                    return response
+                elif response.status_code == 429:
+                    self._exponential_backoff(attempt + 1)
                 else:
-                    logger.warning(
-                        "Unexpected status %d for %s", response.status_code, url
-                    )
+                    logger.warning("[%s] HTTP %d for %s", self.source_name, response.status_code, url)
                     self._exponential_backoff(attempt)
 
-            except (RateLimitError, ForbiddenError):
-                raise
-            except requests.exceptions.Timeout:
-                logger.warning("Timeout fetching %s (attempt %d)", url, attempt + 1)
-                self._exponential_backoff(attempt)
-            except requests.exceptions.ConnectionError as exc:
-                logger.warning("Connection error for %s: %s", url, exc)
-                self._exponential_backoff(attempt)
             except Exception as exc:
-                logger.error("Unexpected error fetching %s: %s", url, exc, exc_info=True)
+                logger.error("[%s] Request failed: %s", self.source_name, exc)
                 self._exponential_backoff(attempt)
 
-        self._consecutive_failures += 1
-        logger.error("All %d attempts failed for %s", self.cfg.MAX_RETRIES, url)
         return None
 
-    # -------------------------------------------------------------------------
-    # Browser Automation: Playwright
-    # -------------------------------------------------------------------------
     def _get_playwright(
         self,
         url: str,
         wait_selector: Optional[str] = None,
         timeout_ms: int = 30000,
     ) -> Optional[str]:
-        """
-        Fetch page content using Playwright (Chromium).
-        Returns the HTML body string or None if failed.
-        """
+        """Fetch page content using Playwright (Chromium)."""
         from playwright.sync_api import sync_playwright
 
         self._sleep_between_requests()
@@ -254,57 +113,64 @@ class BaseScraper(abc.ABC):
 
         try:
             with sync_playwright() as p:
-                # Add --no-sandbox for Render compatibility
                 browser = p.chromium.launch(
                     headless=True,
                     args=["--no-sandbox", "--disable-setuid-sandbox"]
                 )
                 logger.info("[%s] Browser launched successfully", self.source_name)
                 
-                # Create a context with a random User-Agent
                 context = browser.new_context(
                     user_agent=self._random_user_agent(),
                     viewport={"width": 1280, "height": 800}
                 )
                 page = context.new_page()
-
-                # Navigate and wait
                 page.goto(url, timeout=timeout_ms, wait_until="networkidle")
 
                 if wait_selector:
                     try:
                         page.wait_for_selector(wait_selector, timeout=15000)
                     except Exception:
-                        logger.warning("[%s] Playwright timeout waiting for %s",
-                                       self.source_name, wait_selector)
+                        logger.warning("[%s] Timeout waiting for %s", self.source_name, wait_selector)
 
                 content = page.content()
                 browser.close()
                 return content
         except Exception as exc:
-            logger.error("[%s] Playwright error for %s: %s", self.source_name, url, exc)
+            logger.error("[%s] Playwright error: %s", self.source_name, exc)
             return None
 
+    # -------------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------------
+    def _sleep_between_requests(self) -> None:
+        delay = random.uniform(self.cfg.MIN_DELAY, self.cfg.MAX_DELAY)
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < delay:
+            time.sleep(delay - elapsed)
+        self._last_request_time = time.time()
 
-    # -------------------------------------------------------------------------
-    # Shared helpers
-    # -------------------------------------------------------------------------
+    def _exponential_backoff(self, attempt: int) -> None:
+        time.sleep(2**attempt + random.random())
+
+    def _random_user_agent(self) -> str:
+        return random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        ])
+
     def _detect_walkin(self, text: str) -> bool:
-        """Return True if any walk-in keyword appears in text."""
-        if not text:
-            return False
-        text_lower = text.lower()
-        return any(kw in text_lower for kw in self.cfg.WALKIN_KEYWORDS)
+        if not text: return False
+        t = text.lower()
+        return "walk" in t or "interview" in t or "direct" in t
 
     def _detect_fresher(self, text: str) -> bool:
-        """Return True if any fresher keyword appears in text."""
-        if not text:
-            return False
-        text_lower = text.lower()
-        return any(kw in text_lower for kw in self.cfg.FRESHER_KEYWORDS)
+        if not text: return False
+        t = text.lower()
+        return "fresher" in t or "0-1" in t or "entry level" in t
 
     def _build_base_job(self) -> Dict[str, Any]:
-        """Return a job dict pre-populated with source name and timestamp."""
         return {
             "source": self.source_name,
             "extracted_at": datetime.now(timezone.utc),
@@ -312,33 +178,10 @@ class BaseScraper(abc.ABC):
             "is_fresher_friendly": False,
         }
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Return scraper statistics for monitoring."""
-        return {
-            "source": self.source_name,
-            "request_count": self._request_count,
-            "consecutive_failures": self._consecutive_failures,
-        }
-
-    # -------------------------------------------------------------------------
-    # Abstract interface
-    # -------------------------------------------------------------------------
     @abc.abstractmethod
-    def scrape_jobs(
-        self,
-        location: str = "India",
-        keywords: str = "walk-in",
-        max_pages: int = 3,
-    ) -> List[Dict[str, Any]]:
-        """
-        Scrape job listings from the source.
-        """
+    def scrape_jobs(self, location: str, keywords: str, max_pages: int) -> List[Dict[str, Any]]:
         ...
 
     @abc.abstractmethod
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
-        """
-        Parse a single job listing element into a job dictionary.
-        """
         ...
-

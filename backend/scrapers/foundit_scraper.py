@@ -1,9 +1,10 @@
 """
 scrapers/foundit_scraper.py — Foundit (Monster India) job scraper.
 
-Strategy:
-  1. Playwright (Primary) — More reliable for bypassing 403 blocks.
-  2. Specific delays and User-Agent strings.
+Updated with verified selectors (May 2026):
+- Card: .srpCardContainer
+- Title: .jobTitle
+- Company: .companyName
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ DEFAULT_CITIES = ["Hyderabad", "Bangalore", "Chennai"]
 BASE_URL = "https://www.foundit.in"
 
 class FounditScraper(BaseScraper):
-    """Scrapes walk-in jobs from Foundit.in using Playwright."""
+    """Scrapes walk-in jobs from Foundit.in using updated selectors."""
 
     def __init__(self):
         super().__init__(source_name="foundit")
@@ -45,54 +46,47 @@ class FounditScraper(BaseScraper):
             }
             url = f"{BASE_URL}/srp/results?{urlencode(params)}"
             
-            # Use Playwright exclusively as requested
-            html = self._fetch_with_playwright(url)
-
-            if not html:
-                logger.error("[foundit] Failed to fetch content for %s", url)
-                continue
+            html = self._fetch_foundit_content(url)
+            if not html: continue
 
             page_jobs = self._parse_html(html)
-            if not page_jobs: 
-                logger.warning("[foundit] No jobs found on page %d for %s", page, location)
-                break
+            if not page_jobs: break
             
             all_jobs.extend(page_jobs)
-            logger.info("[foundit] %s p%d → %d jobs found", location, page, len(page_jobs))
-            time.sleep(random.uniform(5, 10))
+            logger.info("[foundit] %s p%d → %d jobs", location, page, len(page_jobs))
+            time.sleep(random.uniform(5, 8))
 
         return all_jobs
 
-    def _fetch_with_playwright(self, url: str) -> Optional[str]:
-        """Custom fetch for Foundit to bypass 403."""
+    def _fetch_foundit_content(self, url: str) -> Optional[str]:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
+                context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 page = context.new_page()
                 
-                logger.info("[foundit] Navigating to %s", url)
+                # Increased timeout as requested
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000) # Anti-bot delay
                 
-                # Requested delay to bypass detection
-                page.wait_for_timeout(3000)
-                
-                # Scroll a bit
-                page.mouse.wheel(0, 1000)
-                page.wait_for_timeout(1000)
+                # Wait for results
+                try:
+                    page.wait_for_selector(".srpCardContainer, .srpResultCard", timeout=10000)
+                except:
+                    pass
 
                 content = page.content()
                 browser.close()
                 return content
-        except Exception as exc:
-            logger.error("[foundit] Playwright error: %s", exc)
+        except Exception as e:
+            logger.error("[foundit] Playwright error: %s", e)
             return None
 
     def _parse_html(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "lxml")
-        cards = soup.select(".srpResultCard") or soup.select("[class*='job-card']")
+        # Updated selector: .srpCardContainer
+        cards = soup.select(".srpCardContainer") or soup.select(".srpResultCard") or soup.select("[class*='job-card']")
+        
         jobs = []
         for card in cards:
             parsed = self.parse_job_listing(card)
@@ -102,6 +96,8 @@ class FounditScraper(BaseScraper):
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
         try:
             job = self._build_base_job()
+            
+            # Updated selectors
             title_el = element.select_one(".jobTitle") or element.select_one("h3 a")
             if not title_el: return None
             job["title"] = title_el.get_text(strip=True)
@@ -118,12 +114,19 @@ class FounditScraper(BaseScraper):
             loc_el = element.select_one(".location") or element.select_one(".loc")
             job["location"] = loc_el.get_text(strip=True) if loc_el else "India"
 
-            desc_el = element.select_one(".jobDescription")
-            snippet = desc_el.get_text(strip=True) if desc_el else ""
+            # Foundit details (Experience/Salary)
+            details = element.select(".experienceSalary .details")
+            if details:
+                job["experience"] = details[0].get_text(strip=True)
+                if len(details) > 1:
+                    job["salary"] = details[1].get_text(strip=True)
+
+            snippet_el = element.select_one(".jobDescription") or element.select_one(".description")
+            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
             job["job_description"] = snippet
 
             combined = f"{job['title']} {snippet}".lower()
-            job["is_walkin"] = "walk-in" in combined or "walkin" in combined
+            job["is_walkin"] = "walk" in combined or "interview" in combined
             job["is_fresher_friendly"] = "fresher" in combined or "0-1" in combined
 
             return job
@@ -134,7 +137,6 @@ class FounditScraper(BaseScraper):
         all_jobs = []
         seen = set()
         for city in cities:
-            logger.info("━━━ Foundit city=%s ━━━", city)
             city_jobs = self.scrape_jobs(location=city)
             for j in city_jobs:
                 if j["job_url"] not in seen:
