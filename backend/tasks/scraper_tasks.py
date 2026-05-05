@@ -292,8 +292,13 @@ def _run_scraper_task(source: str, location: str) -> Dict[str, Any]:
         if not scraper:
             raise ValueError(f"Unknown source: {source}")
 
-        logger.info("Starting %s scraper | location=%s", source, location)
-        raw_jobs = scraper.scrape_jobs(location=location)
+        # Naukri uses multi-city scraper; others use single location
+        if source == "naukri":
+            logger.info("Starting naukri scraper | cities=Hyderabad,Bangalore,Chennai")
+            raw_jobs = scraper.scrape_all_cities()
+        else:
+            logger.info("Starting %s scraper | location=%s", source, location)
+            raw_jobs = scraper.scrape_jobs(location=location)
         jobs_found = len(raw_jobs)
         logger.info("%s scraper found %d jobs", source, jobs_found)
 
