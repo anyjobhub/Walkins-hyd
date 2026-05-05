@@ -241,9 +241,11 @@ class NaukriScraper(BaseScraper):
     def _build_search_url(self, city_slug: str, page: int) -> str:
         """
         Build Naukri walk-in search URL.
-        Pattern: https://www.naukri.com/walk-in-jobs-in-{city}-{page}
+        Pattern: https://www.naukri.com/walk-in-interview-jobs-in-{city}-{page}
         """
-        return f"{NAUKRI_BASE}/walk-in-jobs-in-{city_slug}-{page}"
+        if page <= 1:
+            return f"{NAUKRI_BASE}/walk-in-interview-jobs-in-{city_slug}"
+        return f"{NAUKRI_BASE}/walk-in-interview-jobs-in-{city_slug}-{page}"
 
     def _scrape_page(self, city_slug: str, page: int) -> List[Dict[str, Any]]:
         """Fetch one Naukri search page and extract all job cards."""

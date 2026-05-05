@@ -65,13 +65,13 @@ class LinkedInScraper(BaseScraper):
         Fetch LinkedIn job listings using multiple targeted RSS queries.
         Runs 5 queries per city to maximize results.
         """
-        # Multiple targeted queries — each hits a different audience
+        # Multiple targeted queries per city
         search_queries = [
-            "walk in interview",
-            "walk-in drive",
-            "fresher jobs",
-            "bpo jobs",
-            "customer support jobs",
+            f"walk in {location}",
+            f"walk-in drive {location}",
+            f"fresher jobs {location}",
+            f"bpo jobs {location}",
+            "customer support executive",
         ]
 
         all_jobs: List[Dict] = []
@@ -82,6 +82,10 @@ class LinkedInScraper(BaseScraper):
         for query in search_queries:
             try:
                 jobs = self._fetch_rss(query, location)
+                # If first attempt fails/empty, retry once after a small delay
+                if not jobs:
+                    time.sleep(2)
+                    jobs = self._fetch_rss(query, location)
                 new = 0
                 for job in jobs:
                     url = job.get("job_url", "")
