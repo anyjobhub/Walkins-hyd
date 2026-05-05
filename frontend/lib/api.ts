@@ -110,6 +110,14 @@ export async function getJobs(filters: JobFilters = {}): Promise<JobsResponse> {
   return apiFetch<JobsResponse>("/api/jobs", params);
 }
 
+export async function startScrape(key: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/api/scrape/start", { key });
+}
+
+export async function getScrapeStatus(key: string): Promise<{ status: string; service: string }> {
+  return apiFetch<{ status: string; service: string }>("/api/scrape/status", { key });
+}
+
 export async function getJob(id: number): Promise<Job> {
   return apiFetch<Job>(`/api/jobs/${id}`);
 }

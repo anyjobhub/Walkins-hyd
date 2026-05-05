@@ -66,6 +66,11 @@ export default function Header() {
             onMouseLeave={e => (e.currentTarget.style.color = "var(--text-secondary)")}>
             For Freshers
           </Link>
+          <Link href="/admin" style={{ color: "var(--text-secondary)", textDecoration: "none", fontSize: "0.9rem", transition: "color 0.2s" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "var(--text-primary)")}
+            onMouseLeave={e => (e.currentTarget.style.color = "var(--text-secondary)")}>
+            Scraper Admin
+          </Link>
           <a
             href="https://t.me/your_channel"
             target="_blank"
