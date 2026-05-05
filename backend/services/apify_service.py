@@ -64,7 +64,7 @@ def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
             "proxyConfiguration": {"useApifyProxy": True}
         }
 
-        run = client.actor("apify/google-jobs-scraper").call(run_input=run_input)
+        run = client.actor("apify~google-jobs-scraper").call(run_input=run_input)
         
         raw_count = 0
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
