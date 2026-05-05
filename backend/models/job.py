@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import (
-    Boolean, Column, DateTime, Decimal, Integer,
+    Boolean, Column, DateTime, Numeric, Integer,
     String, Text, BigInteger, ForeignKey, ARRAY, JSON
 )
 from sqlalchemy.orm import relationship
@@ -60,8 +60,8 @@ class Job(db.Model):
 
     # --- Experience ---
     experience = Column(String(100))
-    experience_min_years = Column(Decimal(4, 1))
-    experience_max_years = Column(Decimal(4, 1))
+    experience_min_years = Column(Numeric(4, 1))
+    experience_max_years = Column(Numeric(4, 1))
     experience_level = Column(String(20))  # fresher/junior/mid/senior
 
     # --- Skills ---
@@ -280,7 +280,7 @@ class ScrapLog(db.Model):
     jobs_skipped = Column(Integer, default=0)
     started_at = Column(DateTime(timezone=True), nullable=False)
     ended_at = Column(DateTime(timezone=True))
-    duration_secs = Column(Decimal(8, 2))
+    duration_secs = Column(Numeric(8, 2))
     error_message = Column(Text)
     metadata_ = Column("metadata", JSON, default=dict)
 
@@ -360,7 +360,7 @@ class JobDuplicate(db.Model):
     duplicate_job_id = Column(
         Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
-    similarity_score = Column(Decimal(5, 2))   # 0–100
+    similarity_score = Column(Numeric(5, 2))   # 0–100
     detected_at = Column(DateTime(timezone=True), default=_utcnow)
 
     # Relationships
