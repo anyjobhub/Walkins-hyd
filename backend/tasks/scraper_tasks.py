@@ -29,42 +29,83 @@ def run_scraper_pipeline(app: Flask):
                 logger.warning("No jobs fetched from Apify. Pipeline finished.")
                 return
 
-            # 2. Initialise Deduplication
+            logger.info("Fetched %d raw jobs from Apify.", len(apify_jobs))
+
+            # 2. Flatten and Clean List (Requirement 1 & 2)
+            # Ensuring we have a flat list of dictionaries
+            clean_jobs = []
+            for item in apify_jobs:
+                if isinstance(item, list):
+                    # Flatten nested lists if they exist
+                    for sub_item in item:
+                        if isinstance(sub_item, dict):
+                            clean_jobs.append(sub_item)
+                elif isinstance(item, dict):
+                    clean_jobs.append(item)
+                else:
+                    logger.warning("Invalid job skipped: %s", item)
+
+            logger.info("Total jobs after flattening and cleaning: %d", len(clean_jobs))
+
+            # 3. Initialise Deduplication
             dedup_service = DeduplicationService()
             new_jobs_count = 0
             
-            # 3. Process and Save
-            for job_data in apify_jobs:
-                # Check if job already exists by URL
-                existing = Job.query.filter_by(job_url=job_data["job_url"]).first()
-                if existing:
-                    continue
+            # Fetch all existing jobs from DB once for efficiency
+            # Convert them to dicts so the dedup service can handle them
+            existing_jobs = [j.to_dict() for j in Job.query.all()]
+            
+            # 4. Process and Save
+            for job_data in clean_jobs:
+                try:
+                    # Check if job already exists by URL
+                    existing = Job.query.filter_by(job_url=job_data.get("job_url")).first()
+                    if existing:
+                        continue
 
-                # Deduplicate based on content similarity
-                is_duplicate, _ = dedup_service.is_duplicate(job_data, Job.query.all())
-                if is_duplicate:
-                    continue
+                    # Safe Deduplication (Requirement 4 & 5)
+                    is_duplicate = False
+                    for existing_job in existing_jobs:
+                        try:
+                            # is_duplicate returns (bool, score)
+                            is_dup, _ = dedup_service.is_duplicate(job_data, existing_job)
+                            if is_dup:
+                                is_duplicate = True
+                                break
+                        except Exception as e:
+                            logger.error("Dedup error on individual job: %s", e)
+                            continue
 
-                # Create new job record
-                new_job = Job(
-                    title=job_data["title"],
-                    company=job_data["company"],
-                    location=job_data["location"],
-                    job_url=job_data["job_url"],
-                    source=job_data["source"],
-                    is_walkin=job_data["is_walkin"],
-                    is_fresher_friendly=job_data["is_fresher_friendly"],
-                    extracted_at=datetime.now(timezone.utc)
-                )
-                
-                db.session.add(new_job)
-                new_jobs_count += 1
+                    if is_duplicate:
+                        continue
+
+                    # 5. Save Job to DB (Requirement 6)
+                    new_job = Job(
+                        title=job_data.get("title"),
+                        company=job_data.get("company"),
+                        location=job_data.get("location"),
+                        job_url=job_data.get("job_url"),
+                        source=job_data.get("source"),
+                        is_walkin=job_data.get("is_walkin", False),
+                        is_fresher_friendly=job_data.get("is_fresher_friendly", False),
+                        extracted_at=datetime.now(timezone.utc)
+                    )
+                    
+                    db.session.add(new_job)
+                    new_jobs_count += 1
+                    
+                    # Update local existing_jobs list to prevent duplicates within the same run
+                    existing_jobs.append(job_data)
+
+                except Exception as inner_e:
+                    logger.error("Error processing job %s: %s", job_data.get("title"), inner_e)
+                    continue
 
             db.session.commit()
             logger.info("✅ Pipeline Complete: %d new jobs saved to database.", new_jobs_count)
             
         except Exception as e:
-            logger.error("Pipeline Error: %s", e, exc_info=True)
+            logger.error("Pipeline Global Error: %s", e, exc_info=True)
             db.session.rollback()
 
 # =============================================================================
@@ -229,4 +270,3 @@ def run_cleanup(days: int = None) -> Dict[str, Any]:
     deleted = JobRepository().cleanup_old_jobs(days=retention)
 
     return {"status": "success", "deleted": deleted, "retention_days": retention}
-

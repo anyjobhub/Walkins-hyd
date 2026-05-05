@@ -1,5 +1,5 @@
 """
-services/apify_service.py — Job aggregation for Indian walk-in jobs using johnvc~Google-Jobs-Scraper.
+services/apify_service.py — Job aggregation for Indian walk-in jobs using johnvc/Google-Jobs-Scraper.
 """
 
 import os
@@ -21,7 +21,7 @@ def format_job_message(job: Dict[str, Any]) -> str:
     experience = str(job.get("experience") or "Not Mentioned").strip()
     job_url = str(job.get("job_url") or "Not Mentioned").strip()
 
-    # Build the structured message as per requirement
+    # Build the structured message
     message = (
         f"{company} is hiring for {title} | {location}\n\n"
         f"Experience: {experience}\n\n"
@@ -36,8 +36,7 @@ def format_job_message(job: Dict[str, Any]) -> str:
 
 def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
     """
-    Fetches Indian walk-in jobs for Hyderabad, Bangalore, and Chennai.
-    Uses multi-city logic to call the actor separately for each city.
+    Fetches Indian walk-in jobs using multi-city logic and specific field mapping.
     """
     api_token = os.getenv("APIFY_API_TOKEN")
     if not api_token:
@@ -46,50 +45,54 @@ def fetch_jobs_from_apify() -> List[Dict[str, Any]]:
 
     client = ApifyClient(api_token)
     cities = ["Hyderabad", "Bangalore", "Chennai"]
-    relevant_jobs = []
+    
+    # Requirement 1: Single flat list
+    all_jobs = []
     
     for city in cities:
         try:
-            logger.info("Triggering Apify Scraper for city: %s", city)
+            logger.info("Triggering Apify for city: %s", city)
             
+            # Requirement: Correct Apify input config
             run_input = {
                 "query": f"walk in jobs {city}",
                 "location": f"{city}, India",
                 "include_lrad": False,
                 "lrad_value": "5",
-                "maxItems": 10  # Keeping max items low for free plan
+                "maxItems": 15
             }
 
-            # Using johnvc~Google-Jobs-Scraper as requested
             run = client.actor("johnvc/Google-Jobs-Scraper").call(run_input=run_input)
             
-            city_raw_count = 0
+            city_jobs = []
             for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                city_raw_count += 1
-                
                 title = str(item.get("title") or "").lower()
                 
-                # Filter Rules: "walk" OR "bpo" OR "customer" in title
+                # Requirement: Filter logic (walk OR bpo OR customer)
                 if "walk" in title or "bpo" in title or "customer" in title:
-                    job_data = {
+                    # Requirement 3: Map fields correctly as per user request
+                    # Note: Using .get() for safety
+                    job = {
                         "title": item.get("title"),
-                        "company": item.get("companyName") or item.get("company"),
-                        "location": item.get("location") or city.upper(),
-                        "job_url": item.get("jobUrl") or item.get("url"),
+                        "company": item.get("company_name") or item.get("companyName"),
+                        "location": item.get("location") or city,
+                        "job_url": item.get("source_link") or item.get("jobUrl") or item.get("url"),
                         "source": f"Google Jobs ({city})",
                         "experience": item.get("experience") or "Not Mentioned",
                         "is_walkin": "walk" in title,
                         "is_fresher_friendly": any(k in title for k in ["fresher", "0-", "entry"])
                     }
-                    relevant_jobs.append(job_data)
+                    city_jobs.append(job)
 
-            logger.info("City: %s | Total: %d | Relevant: %d", city, city_raw_count, len(relevant_jobs))
+            # Requirement 1: Flattening (extend instead of append)
+            all_jobs.extend(city_jobs)
+            logger.info("Fetched %d jobs for %s", len(city_jobs), city)
 
         except Exception as e:
-            logger.error("Error fetching jobs for %s: %s", city, e)
+            logger.error("Error fetching for %s: %s", city, e)
             continue
 
-    return relevant_jobs
+    return all_jobs
 
 def get_formatted_messages() -> List[str]:
     """
