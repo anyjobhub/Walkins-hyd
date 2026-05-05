@@ -46,7 +46,7 @@ def create_app() -> Flask:
         app,
         resources={
             r"/api/*": {
-                "origins": [Config.flask.FRONTEND_URL, "http://localhost:3000"],
+                "origins": "*",
                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 "allow_headers": ["Content-Type", "Authorization", "X-API-Key"],
             }

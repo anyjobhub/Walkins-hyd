@@ -1,6 +1,6 @@
 // lib/api.ts — API client for the Flask backend
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://walkins-hyd.onrender.com";
 
 export interface Job {
   id: number;
