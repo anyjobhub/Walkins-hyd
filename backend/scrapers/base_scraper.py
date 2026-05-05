@@ -234,6 +234,107 @@ class BaseScraper(abc.ABC):
         return None
 
     # -------------------------------------------------------------------------
+    # Browser Automation: Playwright
+    # -------------------------------------------------------------------------
+    def _get_playwright(
+        self,
+        url: str,
+        wait_selector: Optional[str] = None,
+        timeout_ms: int = 30000,
+    ) -> Optional[str]:
+        """
+        Fetch page content using Playwright (Chromium).
+        Returns the HTML body string or None if failed.
+        """
+        from playwright.sync_api import sync_playwright
+
+        self._sleep_between_requests()
+        logger.info("[%s] Fetching via Playwright: %s", self.source_name, url)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                # Create a context with a random User-Agent
+                context = browser.new_context(
+                    user_agent=self._random_user_agent(),
+                    viewport={"width": 1280, "height": 800}
+                )
+                page = context.new_page()
+
+                # Navigate and wait
+                page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+
+                if wait_selector:
+                    try:
+                        page.wait_for_selector(wait_selector, timeout=15000)
+                    except Exception:
+                        logger.warning("[%s] Playwright timeout waiting for %s",
+                                       self.source_name, wait_selector)
+
+                content = page.content()
+                browser.close()
+                return content
+        except Exception as exc:
+            logger.error("[%s] Playwright error for %s: %s", self.source_name, url, exc)
+            return None
+
+    # -------------------------------------------------------------------------
+    # Browser Automation: Selenium
+    # -------------------------------------------------------------------------
+    def _get_selenium(
+        self,
+        url: str,
+        wait_selector: Optional[str] = None,
+        timeout_sec: int = 30,
+    ) -> Optional[str]:
+        """
+        Fetch page content using Selenium (ChromeDriver).
+        Returns the HTML body string or None if failed.
+        """
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        self._sleep_between_requests()
+        logger.info("[%s] Fetching via Selenium: %s", self.source_name, url)
+
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument(f"user-agent={self._random_user_agent()}")
+
+        driver = None
+        try:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(timeout_sec)
+            driver.get(url)
+
+            if wait_selector:
+                try:
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
+                    )
+                except Exception:
+                    logger.warning("[%s] Selenium timeout waiting for %s",
+                                   self.source_name, wait_selector)
+
+            content = driver.page_source
+            return content
+        except Exception as exc:
+            logger.error("[%s] Selenium error for %s: %s", self.source_name, url, exc)
+            return None
+        finally:
+            if driver:
+                driver.quit()
+
+
+    # -------------------------------------------------------------------------
     # Shared helpers
     # -------------------------------------------------------------------------
     def _detect_walkin(self, text: str) -> bool:

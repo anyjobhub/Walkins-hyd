@@ -111,12 +111,13 @@ class ScraperConfig:
 class SchedulerConfig:
     """APScheduler job intervals."""
     NAUKRI_INTERVAL_HOURS: int = int(_get_env("SCHEDULER_NAUKRI_INTERVAL_HOURS", 4))
-    LINKEDIN_INTERVAL_HOURS: int = int(
-        _get_env("SCHEDULER_LINKEDIN_INTERVAL_HOURS", 6)
+    FOUNDIT_INTERVAL_HOURS: int = int(
+        _get_env("SCHEDULER_FOUNDIT_INTERVAL_HOURS", 6)
     )
-    INDEED_INTERVAL_HOURS: int = int(
-        _get_env("SCHEDULER_INDEED_INTERVAL_HOURS", 6)
+    TIMESJOBS_INTERVAL_HOURS: int = int(
+        _get_env("SCHEDULER_TIMESJOBS_INTERVAL_HOURS", 6)
     )
+
     TELEGRAM_POST_INTERVAL_MINUTES: int = int(
         _get_env("SCHEDULER_TELEGRAM_POST_INTERVAL_MINUTES", 15)
     )

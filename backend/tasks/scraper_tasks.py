@@ -31,14 +31,14 @@ def run_naukri_scraper(location: str = "India") -> Dict[str, Any]:
     return _run_scraper_task("naukri", location)
 
 
-def run_linkedin_scraper(location: str = "India") -> Dict[str, Any]:
-    """Run the LinkedIn RSS scraper and persist results to the DB."""
-    return _run_scraper_task("linkedin", location)
+def run_foundit_scraper(location: str = "India") -> Dict[str, Any]:
+    """Run the Foundit scraper and persist results to the DB."""
+    return _run_scraper_task("foundit", location)
 
 
-def run_indeed_scraper(location: str = "India") -> Dict[str, Any]:
-    """Run the Indeed RSS scraper and persist results to the DB."""
-    return _run_scraper_task("indeed", location)
+def run_timesjobs_scraper(location: str = "India") -> Dict[str, Any]:
+    """Run the TimesJobs scraper and persist results to the DB."""
+    return _run_scraper_task("timesjobs", location)
 
 
 def run_scraper_pipeline(
@@ -48,17 +48,9 @@ def run_scraper_pipeline(
 ) -> Dict[str, Any]:
     """
     Run multiple scrapers in sequence, then spread new jobs to Telegram over 4 hours.
-
-    Args:
-        sources:  List of source names to run.
-        location: Location to scrape for.
-        app:      Flask app instance (needed for spread poster context).
-
-    Returns:
-        Combined statistics dict.
     """
     import threading
-    sources = sources or ["naukri", "linkedin", "indeed"]
+    sources = sources or ["naukri", "foundit", "timesjobs"]
     results = []
 
     for source in sources:
@@ -84,8 +76,6 @@ def run_scraper_pipeline(
             "Spread poster thread started: %d new jobs will post over 4 hours",
             total_added,
         )
-    elif total_added > 0:
-        logger.warning("No app context — spread poster skipped")
 
     return {
         "sources":       results,
@@ -93,6 +83,7 @@ def run_scraper_pipeline(
         "total_added":   total_added,
         "total_skipped": total_skipped,
     }
+
 
 
 # =============================================================================
@@ -284,15 +275,9 @@ def _run_scraper_task(source: str, location: str) -> Dict[str, Any]:
         if not scraper:
             raise ValueError(f"Unknown source: {source}")
 
-        # Naukri/LinkedIn/Indeed all use scrape_all_cities() for multi-city support
-        if source == "naukri":
-            logger.info("Starting naukri scraper | cities=Hyderabad,Bangalore,Chennai")
-            raw_jobs = scraper.scrape_all_cities()
-        elif source == "linkedin":
-            logger.info("Starting linkedin scraper | cities=Hyderabad,Bangalore,Chennai")
-            raw_jobs = scraper.scrape_all_cities()
-        elif source == "indeed":
-            logger.info("Starting indeed scraper | cities=Hyderabad,Bangalore,Chennai")
+        # All scrapers now use scrape_all_cities() for multi-city support
+        if source in ["naukri", "foundit", "timesjobs"]:
+            logger.info("Starting %s scraper | cities=Hyderabad,Bangalore,Chennai", source)
             raw_jobs = scraper.scrape_all_cities()
         else:
             logger.info("Starting %s scraper | location=%s", source, location)
@@ -346,10 +331,11 @@ def _get_scraper(source: str):
     if source == "naukri":
         from scrapers.naukri_scraper import NaukriScraper
         return NaukriScraper()
-    elif source == "linkedin":
-        from scrapers.linkedin_scraper import LinkedInScraper
-        return LinkedInScraper()
-    elif source == "indeed":
-        from scrapers.indeed_scraper import IndeedScraper
-        return IndeedScraper()
+    elif source == "foundit":
+        from scrapers.foundit_scraper import FounditScraper
+        return FounditScraper()
+    elif source == "timesjobs":
+        from scrapers.timesjobs_scraper import TimesJobsScraper
+        return TimesJobsScraper()
     return None
+

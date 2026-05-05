@@ -2,10 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for psycopg2
+# Install system dependencies for psycopg2 and browser automation
 RUN apt-get update && apt-get install -y \
     libpq-dev gcc curl \
+    wget gnupg \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Playwright and its system dependencies
+RUN pip install playwright
+RUN playwright install chromium
+RUN playwright install-deps chromium
+
 
 # Install Python dependencies
 COPY requirements.txt .
