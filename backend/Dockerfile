@@ -12,12 +12,6 @@ RUN apt-get update && apt-get install -y \
     libpq-dev gcc curl wget gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Google Chrome for Selenium
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install Python dependencies first (for faster rebuilds)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -36,4 +30,5 @@ EXPOSE 5000
 
 # Run with gunicorn
 # Use 1 worker for browser automation on small instances to avoid memory issues
+# Timeout increased to 180s for browser rendering
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "180", "app:create_app()"]

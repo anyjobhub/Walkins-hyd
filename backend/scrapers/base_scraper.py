@@ -279,62 +279,6 @@ class BaseScraper(abc.ABC):
             return None
 
     # -------------------------------------------------------------------------
-    # Browser Automation: Selenium
-    # -------------------------------------------------------------------------
-    def _get_selenium(
-        self,
-        url: str,
-        wait_selector: Optional[str] = None,
-        timeout_sec: int = 30,
-    ) -> Optional[str]:
-        """
-        Fetch page content using Selenium (ChromeDriver).
-        Returns the HTML body string or None if failed.
-        """
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from webdriver_manager.chrome import ChromeDriverManager
-
-        self._sleep_between_requests()
-        logger.info("[%s] Fetching via Selenium: %s", self.source_name, url)
-
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"user-agent={self._random_user_agent()}")
-
-        driver = None
-        try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.set_page_load_timeout(timeout_sec)
-            driver.get(url)
-
-            if wait_selector:
-                try:
-                    WebDriverWait(driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
-                    )
-                except Exception:
-                    logger.warning("[%s] Selenium timeout waiting for %s",
-                                   self.source_name, wait_selector)
-
-            content = driver.page_source
-            return content
-        except Exception as exc:
-            logger.error("[%s] Selenium error for %s: %s", self.source_name, url, exc)
-            return None
-        finally:
-            if driver:
-                driver.quit()
-
-
-    # -------------------------------------------------------------------------
     # Shared helpers
     # -------------------------------------------------------------------------
     def _detect_walkin(self, text: str) -> bool:
@@ -380,14 +324,6 @@ class BaseScraper(abc.ABC):
     ) -> List[Dict[str, Any]]:
         """
         Scrape job listings from the source.
-
-        Args:
-            location: City or country to search in.
-            keywords: Search terms.
-            max_pages: Maximum number of result pages to scrape.
-
-        Returns:
-            List of job dictionaries, each matching the Job model fields.
         """
         ...
 
@@ -395,11 +331,6 @@ class BaseScraper(abc.ABC):
     def parse_job_listing(self, element: Any) -> Optional[Dict[str, Any]]:
         """
         Parse a single job listing element into a job dictionary.
-
-        Args:
-            element: HTML element or dict representing a job listing.
-
-        Returns:
-            Job dict or None if parsing fails.
         """
         ...
+

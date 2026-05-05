@@ -3,8 +3,7 @@ scrapers/naukri_scraper.py — Naukri.com walk-in job scraper.
 
 Strategy:
   1. Playwright (Primary) — Headless browser to handle dynamic JS content.
-  2. Selenium (Fallback) — Headless Chrome if Playwright fails.
-  3. City-based loops for Hyderabad, Bangalore, Chennai.
+  2. City-based loops for Hyderabad, Bangalore, Chennai.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ RELEVANCE_KEYWORDS: List[str] = [
 
 
 class NaukriScraper(BaseScraper):
-    """Scrapes walk-in jobs from Naukri.com using browser automation."""
+    """Scrapes walk-in jobs from Naukri.com using Playwright ONLY."""
 
     BASE_URL = NAUKRI_BASE
 
@@ -47,56 +46,38 @@ class NaukriScraper(BaseScraper):
         super().__init__(source_name="naukri")
         self.cleaner = DataCleaner()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ─────────────────────────────────────────────────────────────────────────
     def scrape_jobs(
         self,
         location: str = "hyderabad",
         keywords: str = "walk-in",
         max_pages: int = 2,
     ) -> List[Dict[str, Any]]:
-        """Scrape walk-in jobs for a single city using Playwright -> Selenium."""
+        """Scrape walk-in jobs using Playwright."""
         all_jobs: List[Dict] = []
         city_slug = location.lower().replace(" ", "-")
-        logger.info("Naukri | city=%s pages=%d", location, max_pages)
+        logger.info("[naukri] Scraping %s | pages=%d", location, max_pages)
 
         for page in range(1, max_pages + 1):
             url = self._build_search_url(city_slug, page)
-            html = None
-
-            # 1. Try Playwright
-            try:
-                html = self._get_playwright(url, wait_selector="article.jobTuple")
-                if html:
-                    logger.info("Naukri | city=%s p%d | Playwright SUCCESS", location, page)
-            except Exception as exc:
-                logger.warning("Naukri | Playwright failed: %s", exc)
-
-            # 2. Fallback to Selenium
-            if not html:
-                try:
-                    html = self._get_selenium(url, wait_selector="article.jobTuple")
-                    if html:
-                        logger.info("Naukri | city=%s p%d | Selenium FALLBACK SUCCESS", location, page)
-                except Exception as exc:
-                    logger.error("Naukri | Selenium fallback failed: %s", exc)
+            
+            # Use Playwright ONLY
+            html = self._get_playwright(url, wait_selector="article.jobTuple")
 
             if not html:
-                logger.error("Naukri | Both Playwright and Selenium failed for %s", url)
+                logger.error("[naukri] Playwright failed to fetch content for %s", url)
                 continue
 
             # Parse results
             page_jobs = self._parse_html(html)
             if not page_jobs:
-                logger.warning("Naukri | No job cards found on page %d", page)
+                logger.warning("[naukri] No job cards found on page %d for %s", page, location)
                 break
 
             all_jobs.extend(page_jobs)
-            logger.info("Naukri | city=%s p%d → %d jobs", location, page, len(page_jobs))
+            logger.info("[naukri] %s p%d → %d jobs found", location, page, len(page_jobs))
 
             if page < max_pages:
-                time.sleep(random.uniform(2, 5))
+                time.sleep(random.uniform(3, 6))
 
         return all_jobs
 
@@ -132,6 +113,7 @@ class NaukriScraper(BaseScraper):
             href = title_el.get("href", "")
             if href:
                 job["job_url"] = href if href.startswith("http") else urljoin(NAUKRI_BASE, href)
+                # Deduplication key is job_url
                 job["source_id"] = re.sub(r"[?#].*", "", href).strip("/").split("/")[-1]
 
             comp_el = element.select_one("a.comp-name") or element.select_one(".companyInfo a")
@@ -144,11 +126,6 @@ class NaukriScraper(BaseScraper):
             if exp_el:
                 job["experience"] = exp_el.get_text(strip=True)
                 job.update(self.cleaner.normalize_experience(job["experience"]))
-
-            sal_el = element.select_one("li.salary") or element.select_one(".sal")
-            if sal_el:
-                job["salary"] = sal_el.get_text(strip=True)
-                job.update(self.cleaner.normalize_salary(job["salary"]))
 
             desc_el = element.select_one(".job-description") or element.select_one(".cust-job-description")
             snippet = desc_el.get_text(strip=True) if desc_el else ""
@@ -166,22 +143,21 @@ class NaukriScraper(BaseScraper):
         except Exception:
             return None
 
-    def scrape_all_cities(self, cities=None, max_pages=2) -> List[Dict[str, Any]]:
+    def scrape_all_cities(self, cities=None) -> List[Dict[str, Any]]:
         """Multi-city loop for Hyderabad, Bangalore, Chennai."""
         cities = cities or DEFAULT_CITIES
         all_jobs = []
         seen_urls = set()
 
         for city in cities:
-            logger.info("━━━ Naukri city=%s ━━━", city)
-            city_jobs = self.scrape_jobs(location=city, max_pages=max_pages)
+            city_jobs = self.scrape_jobs(location=city, max_pages=2)
             for j in city_jobs:
                 if j["job_url"] not in seen_urls:
                     seen_urls.add(j["job_url"])
                     if self.is_relevant(j):
                         all_jobs.append(j)
 
-        logger.info("Naukri total unique jobs: %d", len(all_jobs))
+        logger.info("[naukri] Total unique relevant jobs: %d", len(all_jobs))
         return all_jobs
 
     def _build_search_url(self, city: str, page: int) -> str:
@@ -194,22 +170,12 @@ class NaukriScraper(BaseScraper):
         return any(kw in haystack for kw in RELEVANCE_KEYWORDS)
 
     def extract_walkin_details(self, text: str) -> Dict[str, Any]:
-        """Extract date, time, venue, contact info."""
+        """Extract date, time, venue info."""
         res = {"walkin_dates":None, "walkin_time":None, "address":None, "contact_person":None, "contact_phone":None}
         if not text: return res
         
-        # Simple patterns as requested
         date_m = re.search(r"(\d{1,2}(?:st|nd|rd|th)?\s*[A-Za-z]{3,}\s*(?:-\s*\d{1,2}(?:st|nd|rd|th)?\s*[A-Za-z]{3,})?)", text)
         if date_m: res["walkin_dates"] = date_m.group(1)
-
-        time_m = re.search(r"(\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s*(?:-\s*\d{1,2}(?::\d{2})?\s*(?:AM|PM))?)", text, re.I)
-        if time_m: res["walkin_time"] = time_m.group(1)
-
-        venue_m = re.search(r"(?:Venue|Address|Location)[:\s]+([^\n.]+)", text, re.I)
-        if venue_m: res["address"] = venue_m.group(1).strip()
-
-        contact_m = re.search(r"(?:Contact|Person|HR)[:\s]+([A-Za-z\s]{3,20})", text, re.I)
-        if contact_m: res["contact_person"] = contact_m.group(1).strip()
 
         phone_m = re.search(r"(\d{10})", text)
         if phone_m: res["contact_phone"] = phone_m.group(1)

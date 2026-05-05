@@ -2,7 +2,7 @@
 scrapers/timesjobs_scraper.py — TimesJobs walk-in job scraper.
 
 Strategy:
-  1. Requests + BeautifulSoup (Step 1)
+  1. Requests + SSL Verify=False (to handle certificate issues)
   2. Playwright (Fallback)
 """
 
@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import random
+import urllib3
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin, urlencode
 
@@ -19,6 +20,9 @@ from bs4 import BeautifulSoup
 
 from scrapers.base_scraper import BaseScraper
 from services.data_cleaner import DataCleaner
+
+# Disable SSL warnings as requested
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +38,7 @@ class TimesJobsScraper(BaseScraper):
 
     def scrape_jobs(self, location="Hyderabad", keywords="walk-in", max_pages=2) -> List[Dict[str, Any]]:
         all_jobs = []
-        logger.info("TimesJobs | city=%s", location)
+        logger.info("[timesjobs] Scraping %s | pages=%d", location, max_pages)
 
         for page in range(1, max_pages + 1):
             params = {
@@ -50,13 +54,17 @@ class TimesJobsScraper(BaseScraper):
             url = f"{BASE_URL}/candidate/job-search.html?{urlencode(params)}"
             
             html = None
-            resp = self._get(url)
-            if resp and resp.status_code == 200:
-                html = resp.text
-                logger.info("TimesJobs | city=%s p%d | requests SUCCESS", location, page)
+            try:
+                # Use verify=False to bypass SSL issues
+                resp = self._get(url, verify=False)
+                if resp and resp.status_code == 200:
+                    html = resp.text
+                    logger.info("[timesjobs] %s p%d | Requests success", location, page)
+            except Exception as e:
+                logger.error("[timesjobs] SSL/Request error for %s: %s", url, e)
             
             if not html or "No Jobs found" in html:
-                logger.info("TimesJobs | requests failed, trying Playwright...")
+                logger.info("[timesjobs] Requests failed, trying Playwright...")
                 html = self._get_playwright(url, wait_selector=".job-bx")
 
             if not html: continue
@@ -65,8 +73,8 @@ class TimesJobsScraper(BaseScraper):
             if not page_jobs: break
             
             all_jobs.extend(page_jobs)
-            logger.info("TimesJobs | city=%s p%d → %d jobs", location, page, len(page_jobs))
-            time.sleep(random.uniform(2, 5))
+            logger.info("[timesjobs] %s p%d → %d jobs found", location, page, len(page_jobs))
+            time.sleep(random.uniform(3, 6))
 
         return all_jobs
 
@@ -86,7 +94,9 @@ class TimesJobsScraper(BaseScraper):
             if not title_el: return None
             job["title"] = title_el.get_text(strip=True)
             job["job_url"] = title_el.get("href")
-            job["source_id"] = job["job_url"].split("/")[-1].replace(".html", "")
+            
+            if job["job_url"]:
+                job["job_url"] = job["job_url"].split("?")[0] # Clean URL
 
             comp_el = element.select_one("h3.joblist-comp-name")
             job["company"] = comp_el.get_text(strip=True).split("(")[0].strip() if comp_el else "Unknown"
@@ -110,10 +120,11 @@ class TimesJobsScraper(BaseScraper):
         all_jobs = []
         seen = set()
         for city in cities:
-            logger.info("━━━ TimesJobs city=%s ━━━", city)
             city_jobs = self.scrape_jobs(location=city)
             for j in city_jobs:
                 if j["job_url"] not in seen:
                     seen.add(j["job_url"])
                     all_jobs.append(j)
+        
+        logger.info("[timesjobs] Total unique relevant jobs: %d", len(all_jobs))
         return all_jobs

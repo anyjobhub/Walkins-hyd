@@ -8,7 +8,6 @@ set -o errexit
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright browsers
-# Note: On Render's native environment, we might not have permission to install system deps
-# but Chromium often works with the pre-installed libraries.
-playwright install chromium
+# Install Playwright browsers and their system dependencies
+# Using --with-deps to ensure all OS-level libraries are present
+playwright install --with-deps chromium
