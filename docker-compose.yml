@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: walkins_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: walkins_db
+      POSTGRES_USER: walkins_user
+      POSTGRES_PASSWORD: walkins_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U walkins_user -d walkins_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Flask Backend ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: walkins_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://walkins_user:walkins_pass@postgres:5432/walkins_db
+      FLASK_ENV: production
+      FLASK_DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHANNEL_ID: ${TELEGRAM_CHANNEL_ID}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      LOG_LEVEL: INFO
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── Next.js Frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: walkins_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:5000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
